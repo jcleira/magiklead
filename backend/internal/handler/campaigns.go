@@ -195,3 +195,61 @@ func (h *CampaignHandler) ListLeads(w http.ResponseWriter, r *http.Request) {
 	}
 	apierr.WriteJSON(w, http.StatusOK, leads)
 }
+
+// AddLeads handles POST /api/v1/campaigns/:id/leads — seeds a campaign
+// from the tenant's saved-leads list. Each person_id must already
+// exist in tenant_leads for this tenant; otherwise it's silently
+// skipped (the response reports how many landed). Plan §T06.
+func (h *CampaignHandler) AddLeads(w http.ResponseWriter, r *http.Request) {
+	id, err := uuid.Parse(chi.URLParam(r, "id"))
+	if err != nil {
+		apierr.WriteError(w, apierr.ErrBadRequest)
+		return
+	}
+
+	tenantID := getTenantID(r.Context())
+	campaign, err := h.queries.GetCampaign(r.Context(), repository.GetCampaignParams{ID: pgUUID(id), TenantID: pgUUID(tenantID)})
+	if err != nil {
+		apierr.WriteError(w, apierr.ErrNotFound)
+		return
+	}
+
+	var req struct {
+		PersonIDs []string `json:"person_ids"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		apierr.WriteError(w, apierr.ErrBadRequest)
+		return
+	}
+	if len(req.PersonIDs) == 0 {
+		apierr.WriteError(w, apierr.APIError{Status: 400, Code: "bad_request", Message: "person_ids required"})
+		return
+	}
+
+	added := 0
+	skipped := 0
+	for _, raw := range req.PersonIDs {
+		personID, err := uuid.Parse(raw)
+		if err != nil {
+			skipped++
+			continue
+		}
+		if _, err := h.queries.GetTenantLead(r.Context(), repository.GetTenantLeadParams{
+			TenantID: pgUUID(tenantID),
+			PersonID: pgUUID(personID),
+		}); err != nil {
+			skipped++
+			continue
+		}
+		if err := h.queries.AddPersonToCampaign(r.Context(), repository.AddPersonToCampaignParams{
+			CampaignID: pgUUID(uuid.UUID(campaign.ID.Bytes)),
+			PersonID:   pgUUID(personID),
+		}); err != nil {
+			skipped++
+			continue
+		}
+		added++
+	}
+
+	apierr.WriteJSON(w, http.StatusOK, map[string]int{"added": added, "skipped": skipped})
+}

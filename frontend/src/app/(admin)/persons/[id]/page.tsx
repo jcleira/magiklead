@@ -3,14 +3,10 @@
 import Link from "next/link";
 import { useParams, useRouter } from "next/navigation";
 import { useCallback, useEffect, useState } from "react";
-import {
-  type PersonDetail,
-  deletePerson,
-  getPerson,
-  mergeConflict,
-} from "@/lib/admin-api";
+import { type PersonDetail, useAdminApi } from "@/lib/admin-api";
 
 export default function PersonDetailPage() {
+  const { getPerson, deletePerson } = useAdminApi();
   const params = useParams();
   const router = useRouter();
   const id = params.id as string;
@@ -34,7 +30,7 @@ export default function PersonDetailPage() {
     } finally {
       setLoading(false);
     }
-  }, [id]);
+  }, [id, getPerson]);
 
   useEffect(() => {
     void reload();
@@ -302,6 +298,7 @@ function MergeCard({
   survivingId: string;
   onMerged: () => void;
 }) {
+  const { mergeConflict } = useAdminApi();
   const [conflictId, setConflictId] = useState("");
   const [mergedId, setMergedId] = useState("");
   const [reason, setReason] = useState("");

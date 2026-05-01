@@ -1,0 +1,37 @@
+project: magiklead
+
+modules:
+  postgres: true
+  redis: true
+  minio: true
+  stripe: true
+  mailhog: true
+
+services:
+  - name: api
+    build: ./backend
+    dockerfile: Dockerfile.dev
+    port: 8080
+    subdomain: "api"
+    env_file: backend
+    hot_reload: air
+    health: /health
+  - name: frontend
+    build: ./frontend
+    dockerfile: Dockerfile.dev
+    port: 3000
+    subdomain: ""
+    env_file: frontend
+    hot_reload: next
+  - name: worker
+    build: ./backend
+    dockerfile: Dockerfile.dev
+    env_file: backend
+    exposed: false
+
+seeds:
+  db: postgres
+  storage: minio
+  bucket: magiklead
+
+cors_origin: "*"

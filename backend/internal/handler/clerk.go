@@ -7,16 +7,38 @@ import (
 	"net/http"
 
 	"github.com/jackc/pgx/v5/pgtype"
+	svix "github.com/svix/svix-webhooks/go"
 
 	"github.com/jcleira/magiklead/backend/internal/repository"
 )
 
 type ClerkHandler struct {
 	queries *repository.Queries
+	webhook *svix.Webhook
 }
 
-func NewClerkHandler(q *repository.Queries) *ClerkHandler {
-	return &ClerkHandler{queries: q}
+// NewClerkHandler builds the handler. webhookSecret is the
+// CLERK_WEBHOOK_SECRET (format: "whsec_<base64>") used to verify Svix
+// signatures on /api/v1/webhooks/clerk. An empty secret causes the
+// constructor to return a handler that rejects every webhook — this
+// is intentional: the app must not silently accept unverified payloads
+// in production.
+func NewClerkHandler(q *repository.Queries, webhookSecret string) *ClerkHandler {
+	h := &ClerkHandler{queries: q}
+	if webhookSecret != "" {
+		wh, err := svix.NewWebhook(webhookSecret)
+		if err != nil {
+			// Log loud and continue — `HandleWebhook` already returns
+			// 503 when h.webhook is nil, so a bad secret degrades the
+			// webhook path without crashing the api. Production runs
+			// will trip the 503 immediately on first delivery and the
+			// log line names the cause.
+			log.Printf("CLERK_WEBHOOK_SECRET is set but invalid (%v); webhook endpoint will return 503 until corrected", err)
+			return h
+		}
+		h.webhook = wh
+	}
+	return h
 }
 
 // HandleWebhook handles POST /api/v1/webhooks/clerk
@@ -27,8 +49,16 @@ func (h *ClerkHandler) HandleWebhook(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// TODO: Verify Svix webhook signature
-	// For MVP, trust the payload
+	if h.webhook == nil {
+		log.Print("clerk webhook rejected: signature verification not configured")
+		w.WriteHeader(http.StatusServiceUnavailable)
+		return
+	}
+	if err := h.webhook.Verify(body, r.Header); err != nil {
+		log.Printf("clerk webhook signature verification failed: %v", err)
+		w.WriteHeader(http.StatusUnauthorized)
+		return
+	}
 
 	var event struct {
 		Type string          `json:"type"`

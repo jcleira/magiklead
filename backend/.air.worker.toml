@@ -1,0 +1,12 @@
+root = "."
+tmp_dir = "tmp"
+
+[build]
+cmd = "go build -o ./tmp/worker ./cmd/worker"
+bin = "./tmp/worker"
+include_ext = ["go"]
+exclude_dir = ["tmp", "vendor"]
+delay = 200
+
+[misc]
+clean_on_exit = true

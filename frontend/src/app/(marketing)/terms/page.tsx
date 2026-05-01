@@ -12,7 +12,7 @@ export default function TermsPage() {
       <h1 className="text-3xl font-bold tracking-tight text-slate-900">
         Terms of Service
       </h1>
-      <p className="mt-2 text-sm text-slate-400">Last updated: April 10, 2026</p>
+      <p className="mt-2 text-sm text-slate-400">Last updated: April 24, 2026</p>
 
       <div className="mt-10 space-y-10 text-sm leading-relaxed text-slate-600">
         <p>
@@ -83,22 +83,32 @@ export default function TermsPage() {
           </h2>
           <ul className="mt-3 list-disc space-y-1 pl-5">
             <li>
-              Lead discovery depends on third-party data providers. We do not
-              guarantee the accuracy, completeness, or deliverability of any
-              lead data.
+              Our canonical lead database is built from public sources
+              (SEC EDGAR, Wikidata, CrunchBase). We do not guarantee
+              the accuracy, completeness, or deliverability of any lead
+              data, and individuals may request removal at{" "}
+              <a
+                href="/privacy/erasure"
+                className="font-medium text-slate-900 underline"
+              >
+                /privacy/erasure
+              </a>
+              .
             </li>
             <li>
-              Email sending is subject to your Gmail account limits and Google
-              Terms of Service. MagikLead enforces daily send limits to protect
-              your account.
+              Email sending is subject to the limits of the account you
+              connect (Gmail API or SMTP provider) and their terms of
+              service. MagikLead enforces per-account daily send caps
+              to protect your sender reputation.
             </li>
             <li>
-              AI-generated content is provided as a starting point. You are
-              responsible for reviewing and approving all outbound messages.
+              AI-generated content is a starting point. You are
+              responsible for reviewing and approving all outbound
+              messages before they send.
             </li>
             <li>
-              We may modify, suspend, or discontinue features with reasonable
-              notice.
+              We may modify, suspend, or discontinue features with
+              reasonable notice.
             </li>
           </ul>
         </section>

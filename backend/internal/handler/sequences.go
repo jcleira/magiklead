@@ -5,6 +5,7 @@ import (
 	"net/http"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgtype"
 
 	"github.com/jcleira/magiklead/backend/internal/ai"
 	"github.com/jcleira/magiklead/backend/internal/repository"
@@ -34,6 +35,10 @@ func (h *SequenceHandler) Generate(w http.ResponseWriter, r *http.Request) {
 	tenantID := getTenantID(r.Context())
 	if tenantID == uuid.Nil {
 		apierr.WriteError(w, apierr.ErrUnauthorized)
+		return
+	}
+	if apiErr, ok := ensureSequencesQuota(r.Context(), h.queries, tenantID); !ok {
+		apierr.WriteError(w, apiErr)
 		return
 	}
 
@@ -92,6 +97,14 @@ func (h *SequenceHandler) Generate(w http.ResponseWriter, r *http.Request) {
 		ID:       pgUUID(campaignID),
 		Sequence: seqJSON,
 	})
+
+	if err := h.queries.IncrementSequencesUsed(r.Context(), repository.IncrementSequencesUsedParams{
+		TenantID:      pgUUID(tenantID),
+		SequencesUsed: pgtype.Int4{Int32: 1, Valid: true},
+	}); err != nil {
+		// Log-and-continue for counter drift; see tenant_leads.Add.
+		_ = err
+	}
 
 	apierr.WriteJSON(w, http.StatusOK, seq)
 }

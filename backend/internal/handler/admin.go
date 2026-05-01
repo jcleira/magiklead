@@ -228,9 +228,9 @@ func (h *AdminHandler) MergeConflict(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	adminUserID := middleware.GetAdminUserID(r.Context())
+	clerkID := middleware.GetUserClerkID(r.Context())
 
-	if err := h.runMerge(r.Context(), conflictID, survivingID, mergedID, adminUserID, req.Reason); err != nil {
+	if err := h.runMerge(r.Context(), conflictID, survivingID, mergedID, clerkID, req.Reason); err != nil {
 		apierr.WriteError(w, apierr.APIError{Status: 500, Code: "merge_failed", Message: err.Error()})
 		return
 	}
@@ -245,12 +245,20 @@ func (h *AdminHandler) MergeConflict(w http.ResponseWriter, r *http.Request) {
 
 // runMerge executes the multi-table reassignment + history record +
 // deletion under one pgx.Tx. Order follows admin.sql §"Merge persons".
-func (h *AdminHandler) runMerge(ctx context.Context, conflictID, survivingID, mergedID, adminUserID uuid.UUID, reason string) error {
+// The admin user UUID is resolved from the Clerk id inside the tx so
+// the no-match case rolls back cleanly.
+func (h *AdminHandler) runMerge(ctx context.Context, conflictID, survivingID, mergedID uuid.UUID, adminClerkID, reason string) error {
 	keep := pgUUID(survivingID)
 	gone := pgUUID(mergedID)
 
 	return pgx.BeginFunc(ctx, h.pool, func(tx pgx.Tx) error {
 		q := h.queries.WithTx(tx)
+
+		adminUser, err := q.GetUserByClerkID(ctx, adminClerkID)
+		if err != nil {
+			return fmt.Errorf("admin user not found: %w", err)
+		}
+		adminUserID := uuid.UUID(adminUser.ID.Bytes)
 
 		// Both persons must exist before we touch anything.
 		if _, err := q.GetPerson(ctx, keep); err != nil {

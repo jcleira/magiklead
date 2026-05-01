@@ -22,45 +22,6 @@ interface Play {
   channels: string[];
 }
 
-const mockProfile: BusinessProfile = {
-  company_name: "Your Company",
-  product_description: "We help businesses grow with our platform.",
-  features: ["Feature 1", "Feature 2", "Feature 3"],
-  pricing: "Starting at $29/mo",
-  target_customers: ["Startups", "Small businesses", "Agencies"],
-  industry: "SaaS / Technology",
-};
-
-const mockPlays: Play[] = [
-  {
-    id: "1",
-    name: "VP Sales at Growing SaaS Companies",
-    titles: ["VP Sales", "Head of Sales", "CRO"],
-    industry: "Software",
-    company_size: "50-500 employees",
-    signal: "Companies with 3+ open sales roles",
-    channels: ["email", "linkedin"],
-  },
-  {
-    id: "2",
-    name: "Marketing Leaders at E-commerce Brands",
-    titles: ["VP Marketing", "CMO", "Head of Growth"],
-    industry: "E-commerce",
-    company_size: "100-1000 employees",
-    signal: "Recently raised funding",
-    channels: ["email"],
-  },
-  {
-    id: "3",
-    name: "Founders at Early-Stage Startups",
-    titles: ["CEO", "Founder", "Co-founder"],
-    industry: "Technology",
-    company_size: "1-50 employees",
-    signal: "Launched in past 6 months",
-    channels: ["email", "linkedin"],
-  },
-];
-
 export default function OnboardingPage() {
   const { apiFetch } = useApi();
   const [step, setStep] = useState(1);
@@ -82,16 +43,17 @@ export default function OnboardingPage() {
     }
 
     try {
-      const result = await apiFetch<BusinessProfile>("/api/v1/websites/analyze", {
-        method: "POST",
-        body: JSON.stringify({ url: cleanUrl }),
-      });
+      const result = await apiFetch<BusinessProfile>(
+        "/api/v1/websites/analyze",
+        {
+          method: "POST",
+          body: JSON.stringify({ url: cleanUrl }),
+        }
+      );
       setProfile(result);
       setStep(2);
     } catch (e) {
-      // Fallback to mock data during development
-      setProfile({ ...mockProfile, company_name: new URL(url).hostname.replace("www.", "") });
-      setStep(2);
+      setError((e as Error).message);
     } finally {
       setLoading(false);
     }
@@ -104,18 +66,18 @@ export default function OnboardingPage() {
       const result = await apiFetch<Play[]>("/api/v1/plays/generate", {
         method: "POST",
       });
-      if (result && result.length > 0) {
-        setPlays(result);
-        setSelectedPlays(new Set(result.map((p) => p.id)));
-      } else {
-        throw new Error("No plays generated");
+      if (!result || result.length === 0) {
+        throw new Error(
+          "The AI couldn't generate plays from your profile. Try refining the business profile and retry."
+        );
       }
-    } catch {
-      setPlays(mockPlays);
-      setSelectedPlays(new Set(mockPlays.map((p) => p.id)));
+      setPlays(result);
+      setSelectedPlays(new Set(result.map((p) => p.id)));
+      setStep(3);
+    } catch (e) {
+      setError((e as Error).message);
     } finally {
       setLoading(false);
-      setStep(3);
     }
   }
 
@@ -130,8 +92,9 @@ export default function OnboardingPage() {
 
   async function confirm() {
     setLoading(true);
+    setError(null);
     try {
-      // Create a campaign for each selected play
+      // Create a campaign for each selected play.
       let firstCampaignId = "";
       for (const playId of selectedPlays) {
         const play = plays.find((p) => p.id === playId);
@@ -146,12 +109,12 @@ export default function OnboardingPage() {
           firstCampaignId = result.id;
         }
       }
-      // Redirect to the first campaign's setup page
       window.location.href = firstCampaignId
         ? `/campaigns/${firstCampaignId}`
         : "/campaigns";
-    } catch {
-      window.location.href = "/campaigns";
+    } catch (e) {
+      setError((e as Error).message);
+      setLoading(false);
     }
   }
 
@@ -176,6 +139,12 @@ export default function OnboardingPage() {
           </div>
         ))}
       </div>
+
+      {error && (
+        <div className="mb-6 rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
+          {error}
+        </div>
+      )}
 
       {/* Step 1: URL */}
       {step === 1 && (

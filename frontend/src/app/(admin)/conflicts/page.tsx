@@ -2,11 +2,7 @@
 
 import Link from "next/link";
 import { useCallback, useEffect, useState } from "react";
-import {
-  type Conflict,
-  listConflicts,
-  rejectConflict,
-} from "@/lib/admin-api";
+import { type Conflict, useAdminApi } from "@/lib/admin-api";
 
 const statusFilters = [
   { key: "pending", label: "Pending" },
@@ -16,6 +12,7 @@ const statusFilters = [
 ];
 
 export default function ConflictsPage() {
+  const { listConflicts, rejectConflict } = useAdminApi();
   const [status, setStatus] = useState("pending");
   const [conflicts, setConflicts] = useState<Conflict[]>([]);
   const [loading, setLoading] = useState(true);
@@ -30,7 +27,7 @@ export default function ConflictsPage() {
       .then((res) => setConflicts(res.results))
       .catch((e) => setError(e.message))
       .finally(() => setLoading(false));
-  }, [status]);
+  }, [status, listConflicts]);
 
   useEffect(reload, [reload]);
 

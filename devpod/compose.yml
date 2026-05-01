@@ -1,0 +1,132 @@
+services:
+  api:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile.dev
+    env_file:
+      - ${SECRETS_DIR}/.env.backend
+    environment:
+      DEVPOD_NAME: ${DEVPOD_NAME}
+      DEVPOD_PROJECT: ${DEVPOD_PROJECT}
+      APP_ENV: dev
+      PORT: "8080"
+      APP_URL: ${API_URL}
+      FRONTEND_URL: ${FRONTEND_URL}
+      DATABASE_URL: ${DATABASE_URL}
+      REDIS_URL: ${REDIS_URL}
+      S3_ENDPOINT: ${S3_ENDPOINT}
+      S3_PUBLIC_ENDPOINT: ${S3_PUBLIC_ENDPOINT}
+      S3_BUCKET: ${S3_BUCKET}
+      S3_ACCESS_KEY: ${S3_ACCESS_KEY}
+      S3_SECRET_KEY: ${S3_SECRET_KEY}
+      S3_REGION: us-east-1
+      S3_USE_SSL: "false"
+      # System transactional mailer points at MailHog so erasure
+      # confirmation emails (T15) land in the MailHog UI.
+      SYSTEM_SMTP_HOST: mailhog
+      SYSTEM_SMTP_PORT: "1025"
+      SYSTEM_SMTP_FROM: no-reply@magiklead.localhost
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      minio-setup:
+        condition: service_completed_successfully
+    volumes:
+      - ./backend:/app
+      - devpods-gomodcache:/go/pkg/mod
+      - devpods-gobuildcache:/root/.cache/go-build
+      - shared:/shared
+    # Read the Stripe webhook secret (written by stripe-listen on its
+    # own boot) before handing control to air. Then run pending
+    # migrations so a fresh `devpods up` always lands on the latest
+    # schema. Then exec air for hot reload.
+    entrypoint:
+      - /bin/sh
+      - -c
+      - |
+        if [ -f /shared/stripe-webhook-secret ]; then
+          export STRIPE_WEBHOOK_SECRET="$$(cat /shared/stripe-webhook-secret)"
+        fi
+        go run ./cmd/migrate
+        exec air
+    networks:
+      - devpod
+      - traefik-network
+    labels:
+      - "traefik.enable=true"
+      - "traefik.docker.network=traefik-network"
+      - "traefik.http.routers.api-${DEVPOD_PROJECT}-${DEVPOD_NAME}.rule=Host(`api-${DEVPOD_NAME}.${DEVPOD_PROJECT}.localhost`)"
+      - "traefik.http.routers.api-${DEVPOD_PROJECT}-${DEVPOD_NAME}.service=api-${DEVPOD_PROJECT}-${DEVPOD_NAME}"
+      - "traefik.http.services.api-${DEVPOD_PROJECT}-${DEVPOD_NAME}.loadbalancer.server.port=8080"
+
+  worker:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile.dev
+    command: ["air", "-c", ".air.worker.toml"]
+    env_file:
+      - ${SECRETS_DIR}/.env.backend
+    environment:
+      DEVPOD_NAME: ${DEVPOD_NAME}
+      DEVPOD_PROJECT: ${DEVPOD_PROJECT}
+      APP_ENV: dev
+      DATABASE_URL: ${DATABASE_URL}
+      REDIS_URL: ${REDIS_URL}
+      S3_ENDPOINT: ${S3_ENDPOINT}
+      S3_PUBLIC_ENDPOINT: ${S3_PUBLIC_ENDPOINT}
+      S3_BUCKET: ${S3_BUCKET}
+      S3_ACCESS_KEY: ${S3_ACCESS_KEY}
+      S3_SECRET_KEY: ${S3_SECRET_KEY}
+      S3_REGION: us-east-1
+      S3_USE_SSL: "false"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    volumes:
+      - ./backend:/app
+      - devpods-gomodcache:/go/pkg/mod
+      - devpods-gobuildcache:/root/.cache/go-build
+    networks:
+      - devpod
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile.dev
+    env_file:
+      - ${SECRETS_DIR}/.env.frontend
+    environment:
+      DEVPOD_NAME: ${DEVPOD_NAME}
+      DEVPOD_PROJECT: ${DEVPOD_PROJECT}
+      NEXT_PUBLIC_API_URL: ${API_URL}
+      NEXT_PUBLIC_APP_URL: ${FRONTEND_URL}
+      PORT: "3000"
+    volumes:
+      - ./frontend:/app
+      - /app/node_modules
+      - /app/.next
+    networks:
+      - devpod
+      - traefik-network
+    labels:
+      - "traefik.enable=true"
+      - "traefik.docker.network=traefik-network"
+      - "traefik.http.routers.frontend-${DEVPOD_PROJECT}-${DEVPOD_NAME}.rule=Host(`${DEVPOD_NAME}.${DEVPOD_PROJECT}.localhost`)"
+      - "traefik.http.routers.frontend-${DEVPOD_PROJECT}-${DEVPOD_NAME}.service=frontend-${DEVPOD_PROJECT}-${DEVPOD_NAME}"
+      - "traefik.http.services.frontend-${DEVPOD_PROJECT}-${DEVPOD_NAME}.loadbalancer.server.port=3000"
+
+volumes:
+  devpods-gomodcache:
+    external: true
+  devpods-gobuildcache:
+    external: true
+  shared:
+
+networks:
+  devpod:
+  traefik-network:
+    external: true

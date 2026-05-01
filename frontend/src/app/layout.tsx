@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import { Geist, Geist_Mono, Instrument_Serif } from "next/font/google";
+import { ClerkProvider } from "@clerk/nextjs";
 import "./globals.css";
 
 const geistSans = Geist({
@@ -47,40 +48,42 @@ export default function RootLayout({
   children: React.ReactNode;
 }>) {
   return (
-    <html
-      lang="en"
-      className={`${geistSans.variable} ${geistMono.variable} ${instrumentSerif.variable} h-full antialiased`}
-    >
-      <body className="min-h-full flex flex-col" suppressHydrationWarning>
-        <script dangerouslySetInnerHTML={{ __html: `
-          (function() {
-            var t = localStorage.getItem('theme');
-            if (t === 'dark' || (!t && window.matchMedia('(prefers-color-scheme: dark)').matches)) {
-              document.documentElement.classList.add('dark');
-            }
-          })();
-        ` }} />
-        {children}
-        <script
-          type="application/ld+json"
-          dangerouslySetInnerHTML={{
-            __html: JSON.stringify({
-              "@context": "https://schema.org",
-              "@type": "SoftwareApplication",
-              name: "MagikLead",
-              description:
-                "AI-powered cold email and outreach automation platform",
-              applicationCategory: "BusinessApplication",
-              offers: {
-                "@type": "Offer",
-                price: "0",
-                priceCurrency: "USD",
-              },
-              url: "https://magiklead.com",
-            }),
-          }}
-        />
-      </body>
-    </html>
+    <ClerkProvider>
+      <html
+        lang="en"
+        className={`${geistSans.variable} ${geistMono.variable} ${instrumentSerif.variable} h-full antialiased`}
+      >
+        <body className="min-h-full flex flex-col" suppressHydrationWarning>
+          <script dangerouslySetInnerHTML={{ __html: `
+            (function() {
+              var t = localStorage.getItem('theme');
+              if (t === 'dark' || (!t && window.matchMedia('(prefers-color-scheme: dark)').matches)) {
+                document.documentElement.classList.add('dark');
+              }
+            })();
+          ` }} />
+          {children}
+          <script
+            type="application/ld+json"
+            dangerouslySetInnerHTML={{
+              __html: JSON.stringify({
+                "@context": "https://schema.org",
+                "@type": "SoftwareApplication",
+                name: "MagikLead",
+                description:
+                  "AI-powered cold email and outreach automation platform",
+                applicationCategory: "BusinessApplication",
+                offers: {
+                  "@type": "Offer",
+                  price: "0",
+                  priceCurrency: "USD",
+                },
+                url: "https://magiklead.com",
+              }),
+            }}
+          />
+        </body>
+      </html>
+    </ClerkProvider>
   );
 }
