@@ -10,6 +10,29 @@ SELECT * FROM subscriptions WHERE tenant_id = $1;
 UPDATE subscriptions SET plan = $2, leads_limit = $3, sequences_limit = $4, stripe_subscription_id = $5, current_period_start = $6, current_period_end = $7
 WHERE tenant_id = $1;
 
+-- UpdateSubscriptionByStripeID is called from customer.subscription.{created,updated}.
+-- The webhook payload identifies the subscription by Stripe ID, not
+-- tenant_id, so we match on stripe_subscription_id. Period dates flow
+-- through unchanged from Stripe.
+-- name: UpdateSubscriptionByStripeID :exec
+UPDATE subscriptions
+SET plan = $2, leads_limit = $3, sequences_limit = $4,
+    current_period_start = $5,
+    current_period_end = $6
+WHERE stripe_subscription_id = $1;
+
+-- DowngradeByStripeSubscriptionID finds the subscription linked to a
+-- Stripe subscription ID and resets it to the given plan/limits.
+-- Used by the customer.subscription.deleted webhook to flip a tenant
+-- back to free without needing to know their tenant_id.
+-- name: DowngradeByStripeSubscriptionID :exec
+UPDATE subscriptions
+SET plan = $2, leads_limit = $3, sequences_limit = $4,
+    stripe_subscription_id = NULL,
+    current_period_start = NULL,
+    current_period_end = NULL
+WHERE stripe_subscription_id = $1;
+
 -- name: UpdateStripeCustomer :exec
 UPDATE subscriptions SET stripe_customer_id = $2 WHERE tenant_id = $1;
 

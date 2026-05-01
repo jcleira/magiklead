@@ -1,26 +1,19 @@
 package middleware
 
 import (
-	"context"
 	"net/http"
 	"strings"
-
-	"github.com/google/uuid"
-
-	"github.com/jcleira/magiklead/backend/internal/repository"
 )
 
-const AdminUserIDKey contextKey = "adminUserID"
-
 // AdminAuth gates admin-only endpoints. It assumes ClerkAuth has
-// already populated UserClerkIDKey and rejects any caller whose
-// resolved email isn't in `adminEmails`. The matched user's UUID is
-// stashed in context so merge handlers can attribute merge_history
-// rows.
+// already populated UserClerkIDKey + UserEmailKey, and rejects any
+// caller whose email isn't in `adminEmails`. The check is performed
+// entirely from JWT claims — no DB round-trip — so denied requests
+// don't touch the database.
 //
 // adminEmails is normalized lowercase at construction; the env-var
 // reader (cmd/api/main.go) does the splitting on commas.
-func AdminAuth(queries *repository.Queries, adminEmails []string) func(http.Handler) http.Handler {
+func AdminAuth(adminEmails []string) func(http.Handler) http.Handler {
 	allow := make(map[string]struct{}, len(adminEmails))
 	for _, e := range adminEmails {
 		e = strings.ToLower(strings.TrimSpace(e))
@@ -35,30 +28,21 @@ func AdminAuth(queries *repository.Queries, adminEmails []string) func(http.Hand
 				http.Error(w, `{"code":"forbidden","message":"Admin access not configured"}`, http.StatusForbidden)
 				return
 			}
-			clerkID := GetUserClerkID(r.Context())
-			if clerkID == "" {
+			if GetUserClerkID(r.Context()) == "" {
 				http.Error(w, `{"code":"unauthorized","message":"Missing user"}`, http.StatusUnauthorized)
 				return
 			}
-
-			user, err := queries.GetUserByClerkID(r.Context(), clerkID)
-			if err != nil {
-				http.Error(w, `{"code":"forbidden","message":"User not found"}`, http.StatusForbidden)
+			email := GetUserEmail(r.Context())
+			if email == "" {
+				http.Error(w, `{"code":"forbidden","message":"Missing email claim"}`, http.StatusForbidden)
 				return
 			}
-			if _, ok := allow[strings.ToLower(user.Email)]; !ok {
+			if _, ok := allow[email]; !ok {
 				http.Error(w, `{"code":"forbidden","message":"Admin access required"}`, http.StatusForbidden)
 				return
 			}
 
-			ctx := context.WithValue(r.Context(), AdminUserIDKey, uuid.UUID(user.ID.Bytes))
-			next.ServeHTTP(w, r.WithContext(ctx))
+			next.ServeHTTP(w, r.WithContext(r.Context()))
 		})
 	}
-}
-
-// GetAdminUserID returns the UUID of the authenticated admin user.
-func GetAdminUserID(ctx context.Context) uuid.UUID {
-	id, _ := ctx.Value(AdminUserIDKey).(uuid.UUID)
-	return id
 }

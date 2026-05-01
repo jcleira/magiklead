@@ -27,10 +27,12 @@ require (
 	github.com/antchfx/xpath v1.3.5 // indirect
 	github.com/bits-and-blooms/bitset v1.24.4 // indirect
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
+	github.com/clerk/clerk-sdk-go/v2 v2.5.1 // indirect
 	github.com/dgryski/go-rendezvous v0.0.0-20200823014737-9f7001d12a5f // indirect
 	github.com/dustin/go-humanize v1.0.1 // indirect
 	github.com/felixge/httpsnoop v1.0.4 // indirect
 	github.com/go-ini/ini v1.67.0 // indirect
+	github.com/go-jose/go-jose/v3 v3.0.4 // indirect
 	github.com/go-logr/logr v1.4.3 // indirect
 	github.com/go-logr/stdr v1.2.2 // indirect
 	github.com/gobwas/glob v0.2.3 // indirect
@@ -58,6 +60,7 @@ require (
 	github.com/rs/xid v1.6.0 // indirect
 	github.com/saintfish/chardet v0.0.0-20230101081208-5e3ef4b5456d // indirect
 	github.com/spf13/cast v1.10.0 // indirect
+	github.com/svix/svix-webhooks v1.92.2 // indirect
 	github.com/temoto/robotstxt v1.1.2 // indirect
 	github.com/tinylib/msgp v1.6.1 // indirect
 	go.opentelemetry.io/auto/sdk v1.2.1 // indirect

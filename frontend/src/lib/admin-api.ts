@@ -1,6 +1,11 @@
+"use client";
+
 // Typed wrappers for the /api/v1/admin/* backend endpoints (plan §T14).
-// Keeps the page components free of fetch boilerplate and centralizes
-// the response shapes so a backend change surfaces here in one place.
+// Exposed as a hook so pages pick up Clerk-authenticated fetches via
+// useAuth().getToken() without each page having to plumb the token.
+
+import { useAuth } from "@clerk/nextjs";
+import { useMemo } from "react";
 
 export interface Conflict {
   id: string;
@@ -91,54 +96,76 @@ export interface MergeRequest {
 }
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8080";
+const JWT_TEMPLATE = "magiklead-backend";
 
-async function adminFetch<T>(path: string, options: RequestInit = {}): Promise<T> {
-  // TODO(T16): swap "dev-token" for Clerk's getToken() once Clerk is live.
-  const token = "dev-token";
-  const res = await fetch(`${API_URL}${path}`, {
-    ...options,
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${token}`,
-      ...((options.headers as Record<string, string>) || {}),
-    },
-  });
-  if (!res.ok) {
-    const body = await res.json().catch(() => ({ message: "Unknown error" }));
-    throw new Error(body.message || `Admin API error: ${res.status}`);
-  }
-  // Some endpoints (e.g. merge / delete / reject) return small status JSONs;
-  // typing as T lets the caller decide what to do with it.
-  return res.json() as Promise<T>;
-}
+export function useAdminApi() {
+  const { getToken, isLoaded, isSignedIn } = useAuth();
 
-export function listConflicts(status: string, limit = 50, offset = 0) {
-  const qs = new URLSearchParams({ limit: String(limit), offset: String(offset) });
-  if (status) qs.set("status", status);
-  return adminFetch<ConflictListResponse>(`/api/v1/admin/conflicts?${qs}`);
-}
+  return useMemo(() => {
+    async function adminFetch<T>(
+      path: string,
+      options: RequestInit = {}
+    ): Promise<T> {
+      if (!isLoaded || !isSignedIn) {
+        throw new Error("Not authenticated");
+      }
+      const token = await getToken({ template: JWT_TEMPLATE });
+      if (!token) {
+        throw new Error("Not authenticated");
+      }
+      const res = await fetch(`${API_URL}${path}`, {
+        ...options,
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${token}`,
+          ...((options.headers as Record<string, string>) || {}),
+        },
+      });
+      if (!res.ok) {
+        const body = await res
+          .json()
+          .catch(() => ({ message: "Unknown error" }));
+        throw new Error(body.message || `Admin API error: ${res.status}`);
+      }
+      return res.json() as Promise<T>;
+    }
 
-export function rejectConflict(id: string) {
-  return adminFetch<{ status: string }>(
-    `/api/v1/admin/conflicts/${id}/reject`,
-    { method: "POST" }
-  );
-}
-
-export function mergeConflict(id: string, body: MergeRequest) {
-  return adminFetch<{ status: string; surviving_id: string; merged_id: string }>(
-    `/api/v1/admin/conflicts/${id}/merge`,
-    { method: "POST", body: JSON.stringify(body) }
-  );
-}
-
-export function getPerson(id: string) {
-  return adminFetch<PersonDetail>(`/api/v1/admin/persons/${id}`);
-}
-
-export function deletePerson(id: string) {
-  return adminFetch<{ status: string }>(
-    `/api/v1/admin/persons/${id}/delete`,
-    { method: "POST" }
-  );
+    return {
+      listConflicts(status: string, limit = 50, offset = 0) {
+        const qs = new URLSearchParams({
+          limit: String(limit),
+          offset: String(offset),
+        });
+        if (status) qs.set("status", status);
+        return adminFetch<ConflictListResponse>(
+          `/api/v1/admin/conflicts?${qs}`
+        );
+      },
+      rejectConflict(id: string) {
+        return adminFetch<{ status: string }>(
+          `/api/v1/admin/conflicts/${id}/reject`,
+          { method: "POST" }
+        );
+      },
+      mergeConflict(id: string, body: MergeRequest) {
+        return adminFetch<{
+          status: string;
+          surviving_id: string;
+          merged_id: string;
+        }>(`/api/v1/admin/conflicts/${id}/merge`, {
+          method: "POST",
+          body: JSON.stringify(body),
+        });
+      },
+      getPerson(id: string) {
+        return adminFetch<PersonDetail>(`/api/v1/admin/persons/${id}`);
+      },
+      deletePerson(id: string) {
+        return adminFetch<{ status: string }>(
+          `/api/v1/admin/persons/${id}/delete`,
+          { method: "POST" }
+        );
+      },
+    };
+  }, [getToken, isLoaded, isSignedIn]);
 }

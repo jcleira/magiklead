@@ -76,6 +76,11 @@ func (h *LeadSearchHandler) Search(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if apiErr, ok := ensureLeadsQuota(r.Context(), h.queries, getTenantID(r.Context())); !ok {
+		apierr.WriteError(w, apiErr)
+		return
+	}
+
 	limit := req.Limit
 	if limit <= 0 {
 		limit = 50

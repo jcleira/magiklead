@@ -1,19 +1,32 @@
 "use client";
 
+import { useAuth } from "@clerk/nextjs";
 import { useCallback } from "react";
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8080";
 
+// The backend expects a Clerk session JWT minted from the
+// "magiklead-backend" template (see backend/.env.example). That
+// template carries the primary email claim used to gate admin routes
+// without a DB round-trip.
+const JWT_TEMPLATE = "magiklead-backend";
+
 /**
  * Hook that provides an authenticated API fetch function.
- * In production this will use Clerk's getToken().
- * For MVP, passes a placeholder token.
+ * Uses Clerk's getToken() to mint a signed JWT per request.
  */
 export function useApi() {
+  const { getToken, isLoaded, isSignedIn } = useAuth();
+
   const apiFetch = useCallback(
     async <T>(path: string, options?: RequestInit): Promise<T> => {
-      // TODO(T16): Use Clerk's useAuth().getToken() for real JWT
-      const token = "dev-token";
+      if (!isLoaded || !isSignedIn) {
+        throw new Error("Not authenticated");
+      }
+      const token = await getToken({ template: JWT_TEMPLATE });
+      if (!token) {
+        throw new Error("Not authenticated");
+      }
 
       const res = await fetch(`${API_URL}${path}`, {
         ...options,
@@ -33,7 +46,7 @@ export function useApi() {
 
       return res.json();
     },
-    []
+    [getToken, isLoaded, isSignedIn]
   );
 
   return { apiFetch };

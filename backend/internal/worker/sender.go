@@ -59,7 +59,7 @@ func processQueue(ctx context.Context, queries *repository.Queries) {
 	log.Printf("Send loop: %d leads due for sending", len(dueLeads))
 
 	for _, lead := range dueLeads {
-		if !lead.Email.Valid || lead.Email.String == "" {
+		if lead.Email == "" {
 			// Skip leads without email — mark exhausted
 			queries.UpdateCampaignLeadStep(ctx, repository.UpdateCampaignLeadStepParams{
 				ID:          lead.ID,
@@ -112,10 +112,10 @@ func processQueue(ctx context.Context, queries *repository.Queries) {
 		body += "\n\n---\nSent via MagikLead. If you'd like to stop receiving these emails, reply with 'unsubscribe'."
 
 		// Send
-		log.Printf("Sending step %d to %s (%s at %s)", currentStep+1, lead.Email.String, lead.FirstName, lead.Company.String)
-		err = sendSMTP(account, lead.Email.String, subject, body)
+		log.Printf("Sending step %d to %s (%s at %s)", currentStep+1, lead.Email, lead.FirstName, lead.Company)
+		err = sendSMTP(account, lead.Email, subject, body)
 		if err != nil {
-			log.Printf("Send FAILED to %s: %v", lead.Email.String, err)
+			log.Printf("Send FAILED to %s: %v", lead.Email, err)
 			// Don't advance step — will retry next cycle
 			// If it's a permanent failure (bad email), mark bounced
 			if isBounce(err) {
@@ -135,7 +135,7 @@ func processQueue(ctx context.Context, queries *repository.Queries) {
 			continue
 		}
 
-		log.Printf("Sent step %d to %s successfully", currentStep+1, lead.Email.String)
+		log.Printf("Sent step %d to %s successfully", currentStep+1, lead.Email)
 
 		// Log the sent event
 		queries.CreateEmailEvent(ctx, repository.CreateEmailEventParams{
@@ -218,20 +218,14 @@ func sendSMTP(account repository.EmailAccount, to, subject, htmlBody string) err
 }
 
 func personalize(text string, lead repository.GetDueLeadsRow) string {
-	firstName := lead.FirstName
-	lastName := lead.LastName
-	company := ""
 	title := ""
-	if lead.Company.Valid {
-		company = lead.Company.String
-	}
 	if lead.Title.Valid {
 		title = lead.Title.String
 	}
 
-	text = strings.ReplaceAll(text, "{{first_name}}", firstName)
-	text = strings.ReplaceAll(text, "{{last_name}}", lastName)
-	text = strings.ReplaceAll(text, "{{company}}", company)
+	text = strings.ReplaceAll(text, "{{first_name}}", lead.FirstName)
+	text = strings.ReplaceAll(text, "{{last_name}}", lead.LastName)
+	text = strings.ReplaceAll(text, "{{company}}", lead.Company)
 	text = strings.ReplaceAll(text, "{{title}}", title)
 	return text
 }
