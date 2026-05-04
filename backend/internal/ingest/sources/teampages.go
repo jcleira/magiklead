@@ -125,14 +125,18 @@ func (s *TeamPageSource) Parse(ctx context.Context, raw ingest.RawBatch) ([]inge
 		if company == "" {
 			company = domain
 		}
+		fields := map[string]any{
+			"name":           p.Name,
+			"title":          p.Title,
+			"company":        company,
+			"company_domain": domain,
+		}
+		if p.Email != "" {
+			fields["email"] = p.Email
+		}
 		records = append(records, ingest.SourceRecord{
 			ExternalID: fmt.Sprintf("%s:%d", domain, i),
-			Fields: map[string]any{
-				"name":           p.Name,
-				"title":          p.Title,
-				"company":        company,
-				"company_domain": domain,
-			},
+			Fields:     fields,
 		})
 		if s.perPageLimit > 0 && len(records) >= s.perPageLimit {
 			break

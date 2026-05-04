@@ -1,0 +1,64 @@
+# MagikLead TeamPages seed list — operator-curated.
+#
+# One domain per line. Comments and blank lines are ignored. The
+# ingest source walks /team, /leadership, /about and a handful of
+# variants for each domain (see backend/internal/ingest/sources/
+# teampages.go for the full list). Companies whose people pages are
+# fully client-rendered will return empty shells and get skipped
+# automatically; that's expected.
+#
+# Bias: B2B SaaS and tooling companies where roles like "VP Sales",
+# "Head of Revenue", "Director of Marketing" are common. Mix of
+# stages (mid-market through enterprise) keeps the dataset useful
+# for outbound testing without flooding it with people no operator
+# would target.
+
+# Sales/RevOps tooling — likely VP Sales density is highest here
+gong.io
+outreach.io
+apollo.io
+drift.com
+salesloft.com
+6sense.com
+clari.com
+gainsight.com
+chilipiper.com
+demandbase.com
+
+# B2B SaaS — mid/large
+hubspot.com
+intercom.com
+zendesk.com
+asana.com
+monday.com
+atlassian.com
+notion.so
+airtable.com
+linear.app
+figma.com
+
+# Fintech
+stripe.com
+plaid.com
+brex.com
+ramp.com
+mercury.com
+
+# Devtools / Infra
+vercel.com
+netlify.com
+supabase.com
+mongodb.com
+hashicorp.com
+confluent.io
+datadoghq.com
+sentry.io
+elastic.co
+gitlab.com
+
+# AI
+anthropic.com
+openai.com
+huggingface.co
+cohere.com
+scale.com
