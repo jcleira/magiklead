@@ -10,7 +10,7 @@ and gate Phase 0 of this PRD.
 
 | Done | # | Title | Blocked by |
 |------|---|-------|------------|
-| [ ]  | 1 | [Phase 0 unblock fixes](./issues/01-phase-0-unblock.md) | None |
+| [x]  | 1 | [Phase 0 unblock fixes](./issues/01-phase-0-unblock.md) | None |
 | [ ]  | 2 | [Suppression module + schema migrations](./issues/02-suppression-module.md) | [#1](./issues/01-phase-0-unblock.md) |
 | [ ]  | 3 | [Gmail OAuth real send](./issues/03-gmail-oauth-send.md) | [#2](./issues/02-suppression-module.md) |
 | [ ]  | 4 | [Reply detection via Gmail History API](./issues/04-reply-detection.md) | [#3](./issues/03-gmail-oauth-send.md) |

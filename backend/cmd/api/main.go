@@ -2,10 +2,13 @@ package main
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"log"
 	"net/http"
 	"os"
 	"os/signal"
+	"regexp"
 	"strings"
 	"syscall"
 	"time"
@@ -26,12 +29,28 @@ import (
 	"github.com/jcleira/magiklead/backend/internal/repository"
 )
 
+// clerkKeyPattern is Clerk's documented secret-key shape:
+// sk_test_ or sk_live_ followed by at least 20 alphanumerics. The
+// non-empty check upstream let `sk_test_YOUR_CLERK_SECRET_KEY_HERE`
+// pass startup and only fail later in request handling.
+var clerkKeyPattern = regexp.MustCompile(`^sk_(test|live)_[A-Za-z0-9]{20,}$`)
+
+func validateClerkKey(key string) error {
+	if key == "" {
+		return errors.New("CLERK_SECRET_KEY is required")
+	}
+	if !clerkKeyPattern.MatchString(key) {
+		return fmt.Errorf("CLERK_SECRET_KEY does not match Clerk's documented format (sk_test_… or sk_live_… followed by 20+ alphanumerics); got %q", key)
+	}
+	return nil
+}
+
 func main() {
 	_ = godotenv.Load()
 
 	clerkSecret := os.Getenv("CLERK_SECRET_KEY")
-	if clerkSecret == "" {
-		log.Fatal("CLERK_SECRET_KEY is required")
+	if err := validateClerkKey(clerkSecret); err != nil {
+		log.Fatal(err)
 	}
 	clerk.SetKey(clerkSecret)
 

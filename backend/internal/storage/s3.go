@@ -61,13 +61,7 @@ func NewS3Storage(ctx context.Context) (*S3Storage, error) {
 		return nil, errors.New("storage: S3_ENDPOINT, S3_ACCESS_KEY, S3_SECRET_KEY, S3_BUCKET are required")
 	}
 
-	// devpods injects S3_ENDPOINT with an http(s):// scheme; minio.New
-	// expects host:port and derives TLS from the Secure option.
-	if rest, ok := strings.CutPrefix(endpoint, "https://"); ok {
-		endpoint, useSSL = rest, true
-	} else if rest, ok := strings.CutPrefix(endpoint, "http://"); ok {
-		endpoint, useSSL = rest, false
-	}
+	endpoint, useSSL = parseS3Endpoint(endpoint, useSSL)
 
 	client, err := minio.New(endpoint, &minio.Options{
 		Creds:  credentials.NewStaticV4(accessKey, secretKey, ""),
@@ -169,6 +163,20 @@ func (s *S3Storage) Checksum(ctx context.Context, url string) (string, error) {
 		return v, nil
 	}
 	return "", fmt.Errorf("storage: no %s metadata on %s", checksumMetaKey, url)
+}
+
+// parseS3Endpoint strips the http:// or https:// prefix that devpods
+// injects into S3_ENDPOINT (the MinIO SDK's New() expects host:port
+// and derives TLS from Options.Secure). When a scheme is present it
+// overrides defaultUseSSL; otherwise the default flows through.
+func parseS3Endpoint(raw string, defaultUseSSL bool) (string, bool) {
+	if rest, ok := strings.CutPrefix(raw, "https://"); ok {
+		return rest, true
+	}
+	if rest, ok := strings.CutPrefix(raw, "http://"); ok {
+		return rest, false
+	}
+	return raw, defaultUseSSL
 }
 
 // parseURL accepts s3://<bucket>/<key> and returns the key after
