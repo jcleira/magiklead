@@ -53,6 +53,27 @@ func (q *Queries) GetUserByClerkID(ctx context.Context, clerkID string) (User, e
 	return i, err
 }
 
+const lockUserByID = `-- name: LockUserByID :one
+SELECT id, clerk_id, email, name, created_at, updated_at FROM users WHERE id = $1 FOR UPDATE
+`
+
+// LockUserByID takes a row-level lock on a user row inside a tx so the
+// rest of the bootstrap (tenant, link, subscription) is serialised for
+// that user. Pair it with UpsertUserByClerkID in a single transaction.
+func (q *Queries) LockUserByID(ctx context.Context, id pgtype.UUID) (User, error) {
+	row := q.db.QueryRow(ctx, lockUserByID, id)
+	var i User
+	err := row.Scan(
+		&i.ID,
+		&i.ClerkID,
+		&i.Email,
+		&i.Name,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
 const updateUser = `-- name: UpdateUser :one
 UPDATE users SET email = $2, name = $3, updated_at = NOW() WHERE clerk_id = $1 RETURNING id, clerk_id, email, name, created_at, updated_at
 `
@@ -65,6 +86,42 @@ type UpdateUserParams struct {
 
 func (q *Queries) UpdateUser(ctx context.Context, arg UpdateUserParams) (User, error) {
 	row := q.db.QueryRow(ctx, updateUser, arg.ClerkID, arg.Email, arg.Name)
+	var i User
+	err := row.Scan(
+		&i.ID,
+		&i.ClerkID,
+		&i.Email,
+		&i.Name,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
+const upsertUserByClerkID = `-- name: UpsertUserByClerkID :one
+INSERT INTO users (clerk_id, email, name)
+VALUES ($1, $2, $3)
+ON CONFLICT (clerk_id) DO UPDATE
+SET email = EXCLUDED.email,
+    name = EXCLUDED.name,
+    updated_at = NOW()
+RETURNING id, clerk_id, email, name, created_at, updated_at
+`
+
+type UpsertUserByClerkIDParams struct {
+	ClerkID string      `json:"clerk_id"`
+	Email   string      `json:"email"`
+	Name    pgtype.Text `json:"name"`
+}
+
+// UpsertUserByClerkID is the bootstrap-path write: it inserts a new
+// user when the clerk_id is unseen and refreshes email/name on every
+// subsequent call, returning the row either way. The conflict target
+// exploits the UNIQUE constraint on clerk_id, which makes the path
+// safe under concurrent first-requests (one wins the insert, the
+// others see an UPDATE with their refreshed claims).
+func (q *Queries) UpsertUserByClerkID(ctx context.Context, arg UpsertUserByClerkIDParams) (User, error) {
+	row := q.db.QueryRow(ctx, upsertUserByClerkID, arg.ClerkID, arg.Email, arg.Name)
 	var i User
 	err := row.Scan(
 		&i.ID,

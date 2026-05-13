@@ -67,7 +67,7 @@ func main() {
 	emailAccH := handler.NewEmailAccountHandler(queries)
 	deliverH := handler.NewDeliverabilityHandler()
 	billingH := handler.NewBillingHandler(queries, os.Getenv("STRIPE_SECRET_KEY"), os.Getenv("STRIPE_WEBHOOK_SECRET"), os.Getenv("FRONTEND_URL"))
-	clerkH := handler.NewClerkHandler(queries, os.Getenv("CLERK_WEBHOOK_SECRET"))
+	clerkH := handler.NewClerkHandler(queries, pool, os.Getenv("CLERK_WEBHOOK_SECRET"))
 	adminH := handler.NewAdminHandler(queries, pool)
 	systemMailer := email.NewFromEnv()
 	privacyH := handler.NewPrivacyHandler(queries, pool, systemMailer, os.Getenv("FRONTEND_URL"))
@@ -106,7 +106,7 @@ func main() {
 		// Protected routes
 		r.Group(func(r chi.Router) {
 			r.Use(middleware.ClerkAuth)
-			r.Use(middleware.WithTenant(queries))
+			r.Use(middleware.EnsureTenant(middleware.NewLookup(queries), middleware.NewBootstrap(pool)))
 
 			// Websites
 			r.Post("/websites/analyze", websiteH.Analyze)

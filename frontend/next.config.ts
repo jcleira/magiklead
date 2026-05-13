@@ -1,7 +1,10 @@
 import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
-  /* config options here */
+  allowedDevOrigins: [
+    "mvp.magiklead.localhost",
+    "*.magiklead.localhost",
+  ],
 };
 
 export default nextConfig;

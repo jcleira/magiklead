@@ -1,8 +1,8 @@
-# 11 — Postgres nightly backups
+# 12 — Postgres nightly backups
 
 **Type**: HITL — needs Hetzner Storage Box provisioning + credentials.
 **Source PRD**: [../prd.md](../prd.md)
-**Blocked by**: [#4 — Hetzner VPS + domain + api online](./04-hetzner-vps-and-api.md), [#6 — Production data migration](./06-production-data-migration.md)
+**Blocked by**: [#5 — Hetzner VPS + domain + api online](./05-hetzner-vps-and-api.md), [#7 — Production data migration](./07-production-data-migration.md)
 
 ## What to build
 

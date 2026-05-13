@@ -7,13 +7,16 @@ import (
 	"net/http"
 
 	"github.com/jackc/pgx/v5/pgtype"
+	"github.com/jackc/pgx/v5/pgxpool"
 	svix "github.com/svix/svix-webhooks/go"
 
+	"github.com/jcleira/magiklead/backend/internal/bootstrap"
 	"github.com/jcleira/magiklead/backend/internal/repository"
 )
 
 type ClerkHandler struct {
 	queries *repository.Queries
+	pool    *pgxpool.Pool
 	webhook *svix.Webhook
 }
 
@@ -22,9 +25,11 @@ type ClerkHandler struct {
 // signatures on /api/v1/webhooks/clerk. An empty secret causes the
 // constructor to return a handler that rejects every webhook — this
 // is intentional: the app must not silently accept unverified payloads
-// in production.
-func NewClerkHandler(q *repository.Queries, webhookSecret string) *ClerkHandler {
-	h := &ClerkHandler{queries: q}
+// in production. pool is the same pgxpool the rest of the api shares;
+// the user.created branch hands it to bootstrap.Bootstrap so a single
+// transaction provisions the user/tenant/role/subscription quartet.
+func NewClerkHandler(q *repository.Queries, pool *pgxpool.Pool, webhookSecret string) *ClerkHandler {
+	h := &ClerkHandler{queries: q, pool: pool}
 	if webhookSecret != "" {
 		wh, err := svix.NewWebhook(webhookSecret)
 		if err != nil {
@@ -103,49 +108,12 @@ func (h *ClerkHandler) handleUserCreated(r *http.Request, data json.RawMessage) 
 		name += " " + userData.LastName
 	}
 
-	// Check idempotency
-	_, err := h.queries.GetUserByClerkID(r.Context(), userData.ID)
-	if err == nil {
-		return // Already exists
-	}
-
-	// Create user
-	user, err := h.queries.CreateUser(r.Context(), repository.CreateUserParams{
-		ClerkID: userData.ID,
-		Email:   email,
-		Name:    pgtype.Text{String: name, Valid: name != ""},
-	})
+	tenantID, err := bootstrap.Bootstrap(r.Context(), h.pool, userData.ID, email, name)
 	if err != nil {
-		log.Printf("Failed to create user: %v", err)
+		log.Printf("clerk webhook: bootstrap failed for %s: %v", userData.ID, err)
 		return
 	}
-
-	// Create default tenant
-	tenant, err := h.queries.CreateTenant(r.Context(), repository.CreateTenantParams{
-		Name: name + "'s Workspace",
-	})
-	if err != nil {
-		log.Printf("Failed to create tenant: %v", err)
-		return
-	}
-
-	// Link user to tenant
-	h.queries.CreateUserTenant(r.Context(), repository.CreateUserTenantParams{
-		UserID:   user.ID,
-		TenantID: tenant.ID,
-		Role:     pgtype.Text{String: "owner", Valid: true},
-	})
-
-	// Create free subscription
-	freeLimits := PlanLimits["free"]
-	h.queries.CreateSubscription(r.Context(), repository.CreateSubscriptionParams{
-		TenantID:       tenant.ID,
-		Plan:           "free",
-		LeadsLimit:     freeLimits.Leads,
-		SequencesLimit: freeLimits.Sequences,
-	})
-
-	log.Printf("Created user %s, tenant %s", user.ID, tenant.ID)
+	log.Printf("clerk webhook: bootstrapped clerk_id=%s tenant_id=%s", userData.ID, tenantID)
 }
 
 func (h *ClerkHandler) handleUserUpdated(r *http.Request, data json.RawMessage) {

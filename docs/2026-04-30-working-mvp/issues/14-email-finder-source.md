@@ -1,4 +1,4 @@
-# 13 — Email finder source (paid)
+# 14 — Email finder source (paid)
 
 **Type**: HITL — operator chooses the provider, manages the subscription, holds the API key.
 **Source PRD**: [../prd.md](../prd.md)
