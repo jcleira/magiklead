@@ -1,8 +1,8 @@
-# 10 — Uptime monitoring
+# 11 — Uptime monitoring
 
 **Type**: HITL — needs a monitor-service account + URL configuration.
 **Source PRD**: [../prd.md](../prd.md)
-**Blocked by**: [#4 — Hetzner VPS + domain + api online](./04-hetzner-vps-and-api.md)
+**Blocked by**: [#5 — Hetzner VPS + domain + api online](./05-hetzner-vps-and-api.md)
 
 ## What to build
 

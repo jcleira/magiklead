@@ -1,8 +1,8 @@
-# 05 — Frontend on Hetzner
+# 06 — Frontend on Hetzner
 
-**Type**: AFK — mechanical extension of #4 once the deploy infra exists.
+**Type**: AFK — mechanical extension of #5 once the deploy infra exists.
 **Source PRD**: [../prd.md](../prd.md)
-**Blocked by**: [#4 — Hetzner VPS + domain + api online](./04-hetzner-vps-and-api.md)
+**Blocked by**: [#5 — Hetzner VPS + domain + api online](./05-hetzner-vps-and-api.md)
 
 ## What to build
 

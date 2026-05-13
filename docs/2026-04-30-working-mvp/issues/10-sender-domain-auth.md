@@ -1,8 +1,8 @@
-# 09 — Sender domain auth (SPF/DKIM/DMARC)
+# 10 — Sender domain auth (SPF/DKIM/DMARC)
 
 **Type**: HITL — needs DNS registrar credentials + Resend dashboard access.
 **Source PRD**: [../prd.md](../prd.md)
-**Blocked by**: [#8 — Resend transactional email](./08-resend-transactional-email.md)
+**Blocked by**: [#9 — Resend transactional email](./09-resend-transactional-email.md)
 
 ## What to build
 

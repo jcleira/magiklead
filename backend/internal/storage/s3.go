@@ -61,6 +61,14 @@ func NewS3Storage(ctx context.Context) (*S3Storage, error) {
 		return nil, errors.New("storage: S3_ENDPOINT, S3_ACCESS_KEY, S3_SECRET_KEY, S3_BUCKET are required")
 	}
 
+	// devpods injects S3_ENDPOINT with an http(s):// scheme; minio.New
+	// expects host:port and derives TLS from the Secure option.
+	if rest, ok := strings.CutPrefix(endpoint, "https://"); ok {
+		endpoint, useSSL = rest, true
+	} else if rest, ok := strings.CutPrefix(endpoint, "http://"); ok {
+		endpoint, useSSL = rest, false
+	}
+
 	client, err := minio.New(endpoint, &minio.Options{
 		Creds:  credentials.NewStaticV4(accessKey, secretKey, ""),
 		Secure: useSSL,

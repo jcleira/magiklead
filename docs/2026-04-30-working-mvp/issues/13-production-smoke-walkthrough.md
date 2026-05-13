@@ -1,8 +1,8 @@
-# 12 — Production smoke walkthrough
+# 13 — Production smoke walkthrough
 
 **Type**: HITL — operator runs through the flow in a browser end-to-end.
 **Source PRD**: [../prd.md](../prd.md)
-**Blocked by**: [#1](./01-lazy-tenant-bootstrap.md), [#5](./05-frontend-on-hetzner.md), [#6](./06-production-data-migration.md), [#7](./07-sentry-error-tracking.md), [#8](./08-resend-transactional-email.md), [#9](./09-sender-domain-auth.md), [#10](./10-uptime-monitoring.md), [#11](./11-postgres-backups.md)
+**Blocked by**: [#4](./04-local-smoke-walkthrough.md), [#6](./06-frontend-on-hetzner.md), [#7](./07-production-data-migration.md), [#8](./08-sentry-error-tracking.md), [#9](./09-resend-transactional-email.md), [#10](./10-sender-domain-auth.md), [#11](./11-uptime-monitoring.md), [#12](./12-postgres-backups.md), [#14](./14-email-finder-source.md)
 
 ## What to build
 
@@ -18,10 +18,10 @@ This slice is verification, not new construction.
 - [ ] **Save**: save 2–3 leads from the search results; they appear in the saved-leads view.
 - [ ] **Privacy erasure**: in a different browser without auth, submit `/privacy/erasure` for the operator's email. Click the confirmation link in the operator's *real* inbox (not MailHog). Erasure completes; the operator's data is removed from `tenant_leads` / `users` etc.
 - [ ] **Admin**: add operator email to `ADMIN_EMAILS` env, restart api. `/conflicts` and `/persons/<id>` are reachable; admin merge/reject/delete actions work.
-- [ ] **Error tracking** (issue #7 verification): trigger an intentional test error; confirm Sentry receives it with the expected user ID and tenant ID attached.
-- [ ] **Uptime monitor** (issue #10 verification): stop and restart the api container; confirm the monitor pages and resolves.
-- [ ] **Backups** (issue #11 verification): confirm last night's backup exists on the Storage Box; spot-check a row count from a restored copy.
-- [ ] **Email auth** (issue #9 verification): an erasure confirmation email's headers in Gmail show SPF/DKIM/DMARC all PASS.
+- [ ] **Error tracking** (issue #8 verification): trigger an intentional test error; confirm Sentry receives it with the expected user ID and tenant ID attached.
+- [ ] **Uptime monitor** (issue #11 verification): stop and restart the api container; confirm the monitor pages and resolves.
+- [ ] **Backups** (issue #12 verification): confirm last night's backup exists on the Storage Box; spot-check a row count from a restored copy.
+- [ ] **Email auth** (issue #10 verification): an erasure confirmation email's headers in Gmail show SPF/DKIM/DMARC all PASS.
 - [ ] **Operator sign-off**: this is fit to dogfood for days. The follow-up launch PRD (production Clerk + Stripe swap, public launch) can open.
 - [ ] Any broken step is captured as a follow-up issue in this directory or fixed in place before sign-off.
 

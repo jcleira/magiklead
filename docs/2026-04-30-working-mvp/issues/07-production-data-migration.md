@@ -1,8 +1,8 @@
-# 06 — Production data migration
+# 07 — Production data migration
 
-**Type**: AFK — mechanical `pg_dump` + scp + restore once #3 and #4 are done.
+**Type**: AFK — mechanical `pg_dump` + scp + restore once #3 and #5 are done.
 **Source PRD**: [../prd.md](../prd.md)
-**Blocked by**: [#3 — Run real ingest pipeline](./03-real-ingest-run.md), [#4 — Hetzner VPS + domain + api online](./04-hetzner-vps-and-api.md)
+**Blocked by**: [#3 — Run real ingest pipeline](./03-real-ingest-run.md), [#5 — Hetzner VPS + domain + api online](./05-hetzner-vps-and-api.md)
 
 ## What to build
 
@@ -30,6 +30,6 @@ Devpod fixture rows (those with the `(devpod-fixture)` suffix) are filtered out 
 
 ## Out of scope
 
-- Backups of the migrated data — see [issue #11](./11-postgres-backups.md).
+- Backups of the migrated data — see [issue #12](./12-postgres-backups.md).
 - Future incremental ingest in production — out of scope per PRD; v1 is a one-shot run.
 - Object storage migration — `raw_ingests` blobs in MinIO/S3 are not migrated; the canonical tables are sufficient for the smoke path. If the audit trail matters in production, that's a separate task.

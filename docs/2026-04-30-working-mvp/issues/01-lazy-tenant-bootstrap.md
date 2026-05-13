@@ -12,17 +12,17 @@ After this slice, a fresh Clerk sign-up reaching any protected endpoint at `mvp.
 
 ## Acceptance criteria
 
-- [ ] New `internal/bootstrap` package exposes one function: takes a `*pgxpool.Pool`, Clerk ID, email, and optional display name; returns a tenant ID and an error.
-- [ ] All four inserts run inside one Postgres transaction; any failure rolls back the entire sequence.
-- [ ] The user write uses `INSERT ... ON CONFLICT (clerk_id) DO UPDATE` so concurrent first-requests don't double-insert; a `SELECT ... FOR UPDATE` on the user row inside the tx serialises the rest of the bootstrap.
-- [ ] The function returns a typed "no email" error when the JWT email claim is empty; the middleware surfaces this as HTTP 503 with a body naming the JWT-template configuration as the cause.
-- [ ] Workspace name fallback uses the email's local-part with a possessive suffix (`tim's Workspace`) when no display name is provided.
-- [ ] `WithTenant` middleware renamed to `EnsureTenant`; on missing user it calls bootstrap; on bootstrap error it returns 5xx and logs.
-- [ ] `internal/handler/clerk.go` `handleUserCreated` refactored to call the bootstrap function. `handleUserUpdated` left untouched.
-- [ ] `backend/cmd/dev-create-user` directory deleted; no references remain in the repo (grep returns only the PRD/plan history files).
-- [ ] New sqlc query `UpsertUserByClerkID` added to `backend/queries/users.sql`; sqlc-generated Go regenerated and committed.
-- [ ] Tests: bootstrap module — happy path, idempotent re-call, transaction rollback (against a real Postgres). Middleware — user exists vs missing, with a stub bootstrap.
-- [ ] `go test ./...` passes; `go vet ./...` clean.
+- [x] New `internal/bootstrap` package exposes one function: takes a `*pgxpool.Pool`, Clerk ID, email, and optional display name; returns a tenant ID and an error.
+- [x] All four inserts run inside one Postgres transaction; any failure rolls back the entire sequence.
+- [x] The user write uses `INSERT ... ON CONFLICT (clerk_id) DO UPDATE` so concurrent first-requests don't double-insert; a `SELECT ... FOR UPDATE` on the user row inside the tx serialises the rest of the bootstrap.
+- [x] The function returns a typed "no email" error when the JWT email claim is empty; the middleware surfaces this as HTTP 503 with a body naming the JWT-template configuration as the cause.
+- [x] Workspace name fallback uses the email's local-part with a possessive suffix (`tim's Workspace`) when no display name is provided.
+- [x] `WithTenant` middleware renamed to `EnsureTenant`; on missing user it calls bootstrap; on bootstrap error it returns 5xx and logs.
+- [x] `internal/handler/clerk.go` `handleUserCreated` refactored to call the bootstrap function. `handleUserUpdated` left untouched.
+- [x] `backend/cmd/dev-create-user` directory deleted; no references remain in the repo (grep returns only the PRD/plan history files).
+- [x] New sqlc query `UpsertUserByClerkID` added to `backend/queries/users.sql`; sqlc-generated Go regenerated and committed.
+- [x] Tests: bootstrap module — happy path, idempotent re-call, transaction rollback (against a real Postgres). Middleware — user exists vs missing, with a stub bootstrap.
+- [x] `go test ./...` passes; `go vet ./...` clean.
 - [ ] Manual: `devpods up` on a fresh devpod, sign in via Clerk hosted page, hit any protected endpoint — user/tenant/role/subscription rows appear in Postgres. No terminal command needed.
 
 ## Modules touched
@@ -40,6 +40,6 @@ After this slice, a fresh Clerk sign-up reaching any protected endpoint at `mvp.
 ## Out of scope
 
 - Devpods seed snapshot — see [issue #2](./02-devpods-seed-snapshot.md).
-- Production deployment — see [issue #4](./04-hetzner-vps-and-api.md), [#5](./05-frontend-on-hetzner.md).
+- Production deployment — see [issue #5](./05-hetzner-vps-and-api.md), [#6](./06-frontend-on-hetzner.md).
 - Webhook `user.updated` flow — left untouched per PRD.
 - Pre-emptive validation that the JWT template is configured at startup — explicitly rejected; surface the misconfig at request time instead.

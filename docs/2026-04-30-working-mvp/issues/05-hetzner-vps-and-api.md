@@ -1,8 +1,8 @@
-# 04 — Hetzner VPS + domain + api online
+# 05 — Hetzner VPS + domain + api online
 
 **Type**: HITL — VPS provisioning, domain registration, DNS configuration all need operator credentials and decisions.
 **Source PRD**: [../prd.md](../prd.md)
-**Blocked by**: None
+**Blocked by**: [#4 — Local smoke walkthrough](./04-local-smoke-walkthrough.md)
 
 ## What to build
 
@@ -36,8 +36,8 @@ After this slice, `https://api.<domain>/health` returns `ok` over HTTPS with a v
 
 ## Out of scope
 
-- Frontend deploy — see [issue #5](./05-frontend-on-hetzner.md).
-- Production database content — empty DB on first deploy; populated by [issue #6](./06-production-data-migration.md).
-- Sentry / monitoring / backups — see [issues #7](./07-sentry-error-tracking.md), [#10](./10-uptime-monitoring.md), [#11](./11-postgres-backups.md).
+- Frontend deploy — see [issue #6](./06-frontend-on-hetzner.md).
+- Production database content — empty DB on first deploy; populated by [issue #7](./07-production-data-migration.md).
+- Sentry / monitoring / backups — see [issues #8](./08-sentry-error-tracking.md), [#11](./11-uptime-monitoring.md), [#12](./12-postgres-backups.md).
 - Production Clerk + Stripe instance creation — explicitly out of scope per PRD; the deploy uses dev Clerk + dev Stripe keys during the operator's validation window.
 - Multi-VPS or HA layout — single VPS, one process per service.

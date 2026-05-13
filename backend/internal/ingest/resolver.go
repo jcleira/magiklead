@@ -79,6 +79,21 @@ func (r *DefaultResolver) Resolve(ctx context.Context, q *repository.Queries, in
 		}
 	}
 
+	// Source-emitted email lands as an unverified `emails` row tied to
+	// the canonical person; cmd/verify-emails will fill in
+	// verification_method on a later sweep. Upsert by `email` so a
+	// re-ingest is a no-op and a second source seeing the same address
+	// just attaches person_id if it was previously orphaned.
+	if email := strings.ToLower(strings.TrimSpace(firstString(in.Record.Fields, "email"))); email != "" {
+		if _, err := q.CreateEmail(ctx, repository.CreateEmailParams{
+			Email:              email,
+			PersonID:           personID,
+			VerificationMethod: pgtype.Text{Valid: false},
+		}); err != nil {
+			return fmt.Errorf("create email: %w", err)
+		}
+	}
+
 	if _, err := q.CreateEvidence(ctx, repository.CreateEvidenceParams{
 		CanonicalTable: "persons",
 		CanonicalID:    personID,

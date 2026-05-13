@@ -1,8 +1,8 @@
-# 07 — Sentry error tracking
+# 08 — Sentry error tracking
 
 **Type**: HITL — needs Sentry account creation + DSN provisioning.
 **Source PRD**: [../prd.md](../prd.md)
-**Blocked by**: [#4 — Hetzner VPS + domain + api online](./04-hetzner-vps-and-api.md)
+**Blocked by**: [#5 — Hetzner VPS + domain + api online](./05-hetzner-vps-and-api.md)
 
 ## What to build
 
