@@ -12,9 +12,9 @@ import (
 )
 
 const createEmailEvent = `-- name: CreateEmailEvent :one
-INSERT INTO email_events (campaign_lead_id, event_type, step, metadata)
-VALUES ($1, $2, $3, $4)
-RETURNING id, campaign_lead_id, event_type, step, metadata, created_at
+INSERT INTO email_events (campaign_lead_id, event_type, step, metadata, gmail_message_id)
+VALUES ($1, $2, $3, $4, $5)
+RETURNING id, campaign_lead_id, event_type, step, metadata, created_at, gmail_message_id
 `
 
 type CreateEmailEventParams struct {
@@ -22,6 +22,7 @@ type CreateEmailEventParams struct {
 	EventType      string      `json:"event_type"`
 	Step           int32       `json:"step"`
 	Metadata       []byte      `json:"metadata"`
+	GmailMessageID pgtype.Text `json:"gmail_message_id"`
 }
 
 func (q *Queries) CreateEmailEvent(ctx context.Context, arg CreateEmailEventParams) (EmailEvent, error) {
@@ -30,6 +31,7 @@ func (q *Queries) CreateEmailEvent(ctx context.Context, arg CreateEmailEventPara
 		arg.EventType,
 		arg.Step,
 		arg.Metadata,
+		arg.GmailMessageID,
 	)
 	var i EmailEvent
 	err := row.Scan(
@@ -39,12 +41,34 @@ func (q *Queries) CreateEmailEvent(ctx context.Context, arg CreateEmailEventPara
 		&i.Step,
 		&i.Metadata,
 		&i.CreatedAt,
+		&i.GmailMessageID,
+	)
+	return i, err
+}
+
+const findEmailEventByGmailMessageID = `-- name: FindEmailEventByGmailMessageID :one
+SELECT id, campaign_lead_id, event_type, step, metadata, created_at, gmail_message_id FROM email_events
+WHERE gmail_message_id = $1
+LIMIT 1
+`
+
+func (q *Queries) FindEmailEventByGmailMessageID(ctx context.Context, gmailMessageID pgtype.Text) (EmailEvent, error) {
+	row := q.db.QueryRow(ctx, findEmailEventByGmailMessageID, gmailMessageID)
+	var i EmailEvent
+	err := row.Scan(
+		&i.ID,
+		&i.CampaignLeadID,
+		&i.EventType,
+		&i.Step,
+		&i.Metadata,
+		&i.CreatedAt,
+		&i.GmailMessageID,
 	)
 	return i, err
 }
 
 const listEmailEvents = `-- name: ListEmailEvents :many
-SELECT id, campaign_lead_id, event_type, step, metadata, created_at FROM email_events WHERE campaign_lead_id = $1 ORDER BY created_at
+SELECT id, campaign_lead_id, event_type, step, metadata, created_at, gmail_message_id FROM email_events WHERE campaign_lead_id = $1 ORDER BY created_at
 `
 
 func (q *Queries) ListEmailEvents(ctx context.Context, campaignLeadID pgtype.UUID) ([]EmailEvent, error) {
@@ -63,6 +87,7 @@ func (q *Queries) ListEmailEvents(ctx context.Context, campaignLeadID pgtype.UUI
 			&i.Step,
 			&i.Metadata,
 			&i.CreatedAt,
+			&i.GmailMessageID,
 		); err != nil {
 			return nil, err
 		}

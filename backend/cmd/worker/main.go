@@ -11,6 +11,7 @@ import (
 
 	"github.com/jcleira/magiklead/backend/internal/leads"
 	"github.com/jcleira/magiklead/backend/internal/repository"
+	"github.com/jcleira/magiklead/backend/internal/suppression"
 	"github.com/jcleira/magiklead/backend/internal/worker"
 )
 
@@ -24,6 +25,7 @@ func main() {
 	defer pool.Close()
 
 	queries := repository.New(pool)
+	supp := suppression.New(pool)
 
 	// Lead discovery — AI + web scraping + SMTP email verification
 	pipeline := leads.NewPipeline(queries, os.Getenv("ANTHROPIC_API_KEY"))
@@ -42,7 +44,7 @@ func main() {
 	// Start email send loop in background
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	go worker.StartSendLoop(ctx, queries)
+	go worker.StartSendLoop(ctx, queries, supp)
 
 	log.Println("Worker starting...")
 	if err := srv.Run(mux); err != nil {

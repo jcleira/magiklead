@@ -98,6 +98,7 @@ type EmailEvent struct {
 	Step           int32              `json:"step"`
 	Metadata       []byte             `json:"metadata"`
 	CreatedAt      pgtype.Timestamptz `json:"created_at"`
+	GmailMessageID pgtype.Text        `json:"gmail_message_id"`
 }
 
 type Employment struct {
@@ -133,6 +134,8 @@ type GmailAccount struct {
 	DailySentCount   pgtype.Int4        `json:"daily_sent_count"`
 	DailySentResetAt pgtype.Timestamptz `json:"daily_sent_reset_at"`
 	CreatedAt        pgtype.Timestamptz `json:"created_at"`
+	LastHistoryID    pgtype.Text        `json:"last_history_id"`
+	LastPolledAt     pgtype.Timestamptz `json:"last_polled_at"`
 }
 
 type Lead struct {
@@ -336,6 +339,14 @@ type TenantLead struct {
 	Notes         pgtype.Text        `json:"notes"`
 	AddedAt       pgtype.Timestamptz `json:"added_at"`
 	AddedByUserID pgtype.UUID        `json:"added_by_user_id"`
+}
+
+type Unsubscribe struct {
+	ID        pgtype.UUID        `json:"id"`
+	TenantID  pgtype.UUID        `json:"tenant_id"`
+	Email     string             `json:"email"`
+	Reason    string             `json:"reason"`
+	CreatedAt pgtype.Timestamptz `json:"created_at"`
 }
 
 type User struct {

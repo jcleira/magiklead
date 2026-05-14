@@ -10,9 +10,11 @@ import (
 	"strings"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgtype"
 
 	"github.com/jcleira/magiklead/backend/internal/repository"
+	"github.com/jcleira/magiklead/backend/internal/suppression"
 )
 
 type SequenceStep struct {
@@ -24,14 +26,14 @@ type SequenceStep struct {
 
 // StartSendLoop runs every 60 seconds, finds leads that are due for their
 // next email, and sends via SMTP.
-func StartSendLoop(ctx context.Context, queries *repository.Queries) {
+func StartSendLoop(ctx context.Context, queries *repository.Queries, supp *suppression.Module) {
 	ticker := time.NewTicker(60 * time.Second)
 	defer ticker.Stop()
 
 	log.Println("Email send loop started (checking every 60s)")
 
 	// Run immediately on start, then every tick
-	processQueue(ctx, queries)
+	processQueue(ctx, queries, supp)
 
 	for {
 		select {
@@ -39,12 +41,12 @@ func StartSendLoop(ctx context.Context, queries *repository.Queries) {
 			log.Println("Email send loop stopping")
 			return
 		case <-ticker.C:
-			processQueue(ctx, queries)
+			processQueue(ctx, queries, supp)
 		}
 	}
 }
 
-func processQueue(ctx context.Context, queries *repository.Queries) {
+func processQueue(ctx context.Context, queries *repository.Queries, supp *suppression.Module) {
 	// Get leads that are due (next_send_at <= NOW, status = active)
 	dueLeads, err := queries.GetDueLeads(ctx, 10) // Process 10 at a time
 	if err != nil {
@@ -96,6 +98,32 @@ func processQueue(ctx context.Context, queries *repository.Queries) {
 
 		step := sequence[currentStep]
 
+		// Gate every send through the suppression module. A non-nil
+		// result halts the send, writes a 'skipped' email_event with
+		// the reason, and advances the lead to status='suppressed'.
+		tenant := uuid.UUID(campaign.TenantID.Bytes)
+		suppressed, reason, err := supp.IsSuppressed(ctx, tenant, lead.Email)
+		if err != nil {
+			log.Printf("Send loop: suppression check failed for %s: %v — skipping this tick", lead.Email, err)
+			continue
+		}
+		if suppressed {
+			meta, _ := json.Marshal(map[string]string{"reason": reason})
+			queries.CreateEmailEvent(ctx, repository.CreateEmailEventParams{
+				CampaignLeadID: lead.ID,
+				EventType:      "skipped",
+				Step:           int32(currentStep + 1),
+				Metadata:       meta,
+			})
+			queries.UpdateCampaignLeadStep(ctx, repository.UpdateCampaignLeadStepParams{
+				ID:          lead.ID,
+				CurrentStep: lead.CurrentStep,
+				Status:      pgtype.Text{String: "suppressed", Valid: true},
+			})
+			log.Printf("Send loop: skipped %s (%s)", lead.Email, reason)
+			continue
+		}
+
 		// Get email account for this campaign's tenant
 		emailAccounts, err := queries.ListEmailAccounts(ctx, campaign.TenantID)
 		if err != nil || len(emailAccounts) == 0 {
@@ -128,8 +156,8 @@ func processQueue(ctx context.Context, queries *repository.Queries) {
 				queries.CreateEmailEvent(ctx, repository.CreateEmailEventParams{
 					CampaignLeadID: lead.ID,
 					EventType:      "bounced",
-					Step:            int32(currentStep + 1),
-					Metadata:        []byte(fmt.Sprintf(`{"error":"%s"}`, err.Error())),
+					Step:           int32(currentStep + 1),
+					Metadata:       []byte(fmt.Sprintf(`{"error":"%s"}`, err.Error())),
 				})
 			}
 			continue
