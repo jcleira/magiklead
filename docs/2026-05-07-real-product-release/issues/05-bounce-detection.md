@@ -18,27 +18,33 @@ and the next worker tick will skip that lead via the
 
 ## Acceptance criteria
 
-- [ ] `gmail/poller`'s `classify(...)` (added in #4) correctly
+- [x] `gmail/poller`'s `classify(...)` (added in #4) correctly
       identifies Gmail DSN messages and extracts:
   - the original `gmail_message_id` (from the bounced message's
     headers — typically `Message-ID` of the original is referenced
     in the DSN body or `In-Reply-To`),
   - the bounce status code (5xx hard, 4xx soft) from the DSN's
     `Status:` line per RFC 3464.
-- [ ] On `hard-bounce`: call `suppression.RecordHardBounce(...)`,
+- [x] On `hard-bounce`: call `suppression.RecordHardBounce(...)`,
       update `campaign_leads.status='bounced'`, write
       `event_type='bounced'` with the DSN status code captured.
-- [ ] On `soft-bounce`: call `suppression.RecordSoftBounce(...)`
+- [x] On `soft-bounce`: call `suppression.RecordSoftBounce(...)`
       (which increments and writes to `unsubscribes` with
       `reason='soft-bounce-threshold'` only on the third consecutive
       hit — logic centralised in #2's suppression module). Write
-      `event_type='bounced-soft'` with the count so it's visible
-      per send.
-- [ ] After three consecutive soft bounces on the same address,
+      `event_type='soft-bounce'` with the count + DSN status code in
+      metadata so each bounce is visible per send. (Note: the PRD
+      text says `bounced-soft`; #2's suppression module already
+      established `soft-bounce` as the event_type and its
+      `CountConsecutiveSoftBounces` query keys off that string —
+      kept the existing name to avoid a fork. The conceptual
+      contract — per-bounce visibility with count — is met.)
+- [x] After three consecutive soft bounces on the same address,
       subsequent worker ticks skip via `IsSuppressed` (the
       suppression module handles the threshold logic; this slice
-      just records).
-- [ ] Unit tests for the bounce classifier:
+      just records). Pinned by
+      `TestPollOnce_SoftBounceReachesThreshold`.
+- [x] Unit tests for the bounce classifier:
   - hard bounce: 5xx DSN, correct extraction, correct routing,
   - soft bounce: 4xx DSN, correct routing,
   - DSN without a recognisable status code: routed to `unrelated`
@@ -48,6 +54,11 @@ and the next worker tick will skip that lead via the
       `bounce-test@simulator.amazonses.com` or a non-existent
       Gmail address), observe DSN, confirm bounce event row,
       confirm next tick skips that lead via `IsSuppressed`.
+      **Deferred — same prerequisite chain as #3/#4 (Connect Gmail
+      UI from [#8](./08-settings-real-data.md), OAuth client in
+      Google Cloud Console, public HTTPS callback tunnel,
+      `GOOGLE_*` secrets in `.env.backend`). Tick once those are
+      all green.**
 
 ## Modules touched
 

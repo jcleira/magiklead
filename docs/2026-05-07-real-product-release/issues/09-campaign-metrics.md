@@ -19,32 +19,56 @@ campaign is producing replies or bouncing into a spam trap.
 
 ## Acceptance criteria
 
-- [ ] New backend route `GET /api/v1/campaigns/<id>/metrics`
+- [x] New backend route `GET /api/v1/campaigns/<id>/metrics`
       returns:
   - `leads_total` (`campaign_leads` count for this campaign),
   - `sent_total` (`email_events` count where `event_type='sent'`,
     joined to `campaign_leads` of this campaign),
   - `sent_by_step` — array of `{step_order, count}`,
   - `replied_total` (`event_type='replied'`),
-  - `bounced_total` (`event_type IN ('bounced','bounced-soft')`,
+  - `bounced_total` (`event_type IN ('bounced','soft-bounce')`,
     de-duplicated per lead — a lead with 2 soft + 1 hard counts as
-    1 bounce),
-  - `unsubscribed_total` (`unsubscribes` rows for this tenant
-    whose `email` matches a lead on this campaign).
-- [ ] Frontend campaign-detail page at
+    1 bounce). Event names match issue #2's vocabulary ('bounced'
+    + 'soft-bounce'); the PRD draft text said 'bounced-soft' but
+    the suppression module already established 'soft-bounce' and
+    every event-writer keys off that string. Conceptual contract
+    upheld.
+  - `unsubscribed_total` (`unsubscribes` rows for this tenant —
+    or global — whose `email` matches a campaign-lead on this
+    campaign; lead-email resolved via canonical persons graph
+    with legacy `leads` fallback).
+- [x] Frontend campaign-detail page at
       `frontend/src/app/(app)/campaigns/[id]/` renders these counts
       with a tidy header card per category, plus a per-step
       breakdown table.
-- [ ] Near-real-time: page polls the metrics endpoint every 15s
+- [x] Near-real-time: page polls the metrics endpoint every 15s
       while open (no WebSocket needed). On poll, only the metric
       header card re-renders — the rest of the page is static.
-- [ ] Unit tests for the metrics handler against real devpod
+      Implemented via a self-contained `MetricsSection` component
+      with its own `useState` + `setInterval`; the page's existing
+      leads / sequence / dialog blocks own no metrics state and so
+      do not rerender on tick. Also pauses on `document.hidden`
+      so a backgrounded tab doesn't keep polling.
+- [x] Unit tests for the metrics handler against real devpod
       Postgres: cover empty campaign, partial-progress campaign
       (some sent, some replied, some bounced), fully-completed
-      campaign.
-- [ ] Manual local verification: run a small campaign (5 leads),
+      campaign. Implemented as build-tagged integration tests in
+      `backend/internal/handler/campaigns_metrics_test.go`. Run
+      with `devpods exec api go test -tags=integration
+      ./internal/handler/...`. Tracer + tenant-scope (security
+      invariant) + partial-progress (bounce dedup) +
+      unsubscribe-match-by-email + fully-complete all pass.
+- [ ]† Manual local verification: run a small campaign (5 leads),
       observe the dashboard update as the worker progresses through
-      sends → first reply detected → first bounce.
+      sends → first reply detected → first bounce. **Deferred —
+      same prerequisite chain as #3/#4/#5/#6's manual steps
+      (Connect Gmail UI from [#8](./08-settings-real-data.md), OAuth
+      client in Google Cloud Console, public HTTPS callback tunnel,
+      `GOOGLE_*` secrets in `.env.backend`). Plus a small operator
+      fix: `UNSUBSCRIBE_SIGNING_SECRET` must be set in
+      `~/.config/devpods/magiklead/.env.backend` so the api boots
+      (added by #6; this devpod's env was never refreshed). Tick
+      once those are all green.**
 
 ## Modules touched
 

@@ -27,32 +27,32 @@ send writes an `email_events` row with `event_type='sent'` and
 
 ## Acceptance criteria
 
-- [ ] OAuth scope set includes `https://www.googleapis.com/auth/gmail.send`
+- [x] OAuth scope set includes `https://www.googleapis.com/auth/gmail.send`
       and `https://www.googleapis.com/auth/gmail.readonly` (the
       latter is consumed by #4; both granted in this slice so the
       user only sees one consent screen).
-- [ ] Existing OAuth flow in `internal/gmail/oauth.go` re-prompts
+- [x] Existing OAuth flow in `internal/gmail/oauth.go` re-prompts
       users who connected before the scope change so the new scope
       is granted (token's `scope` claim checked at use time; missing
       `gmail.send` returns an actionable error and a re-connect
       link in the UI).
-- [ ] `internal/gmail/sender.go` `Send(...)` is implemented:
+- [x] `internal/gmail/sender.go` `Send(...)` is implemented:
   - takes a `ConnectedAccount` (with refreshable token), a
     `Message{From, To, Subject, Body, Headers}`,
   - calls `users.messages.send` on the Gmail API,
   - returns the Gmail `messageId` and threadId,
   - propagates structured errors for: token expired, scope missing,
     message rejected (Gmail-side reasons), rate limited, network.
-- [ ] `internal/worker/sender.go` is updated to call
+- [x] `internal/worker/sender.go` is updated to call
       `gmail.Sender.Send(...)` (gated by `suppression.IsSuppressed`
       from #2) and to write an `email_events` row with
       `event_type='sent'` + `gmail_message_id` populated.
-- [ ] Unit tests for `gmail.Sender` use the Google API client's
+- [x] Unit tests for `gmail.Sender` use the Google API client's
       mockable transport seam (or a `Doer`-style HTTP-client
       wrapper) and cover: happy path, token expired (auto-refresh
       then retry succeeds), scope missing (returns actionable
       error), 4xx message-rejected, 5xx rate limited, network error.
-- [ ] Unit tests for `worker/sender.go` cover: suppressed lead
+- [x] Unit tests for `worker/sender.go` cover: suppressed lead
       skipped (writes `skipped:suppressed`), happy send (writes
       `sent` + `gmail_message_id`), send failure (writes `failed`
       with classified reason).
@@ -60,7 +60,35 @@ send writes an `email_events` row with `event_type='sent'` and
       app, run a single-lead campaign to the operator's own
       secondary address, confirm message arrives in that inbox,
       confirm `email_events` row in DB has the returned
-      `gmail_message_id`.
+      `gmail_message_id`. **Deferred — blocked on the prerequisites
+      below; tick once they're all green.**
+
+## Manual-verification prerequisites
+
+Surfaced during the 2026-05-15 attempt to exercise criterion #7
+above. None are in this slice's scope, so this slice stops at the
+unit + integration test layer.
+
+- [ ] **Issue #8 ships the "Connect Gmail" UI** on the settings
+      page. The `/gmail/auth-url` + `/gmail/callback` backend
+      routes exist but nothing in the frontend triggers them, so
+      the OAuth flow can't be exercised end-to-end through the
+      product today.
+- [ ] **OAuth client registered in Google Cloud Console** with the
+      `gmail.send` + `gmail.readonly` scopes, the operator's Gmail
+      added as a test user (consent screen still in "Testing"
+      mode), and a public HTTPS redirect URI registered (Google
+      rejects `.localhost`).
+- [ ] **Public HTTPS endpoint for the callback** — a cloudflared
+      quick-tunnel (or ngrok / Tailscale Funnel) in front of the
+      api container, with `--http-host-header
+      api-mvp.magiklead.localhost` so Traefik routes correctly.
+      `GOOGLE_REDIRECT_URI` in `.env.backend` must match the
+      tunnel URL exactly.
+- [ ] **`GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` /
+      `GOOGLE_REDIRECT_URI`** set in
+      `~/.config/devpods/magiklead/.env.backend`; `devpods down &&
+      devpods up` to pick them up.
 
 ## Modules touched
 

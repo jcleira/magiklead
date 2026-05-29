@@ -25,7 +25,7 @@ the sequence for that lead. The seven-day public launch invariant
 
 ## Acceptance criteria
 
-- [ ] New deep module `backend/internal/gmail/poller/`:
+- [x] New deep module `backend/internal/gmail/poller/`:
   - `Tick(ctx, account ConnectedAccount) (newCursor string, events []ClassifiedEvent, err error)`.
   - Stubbable seam over the Gmail SDK so unit tests can run
     without hitting Google.
@@ -34,37 +34,41 @@ the sequence for that lead. The seven-day public launch invariant
     `bounce` (DSN format — classification logic lives here but
     handling lands in [#5](./05-bounce-detection.md)), or
     `unrelated` (ignored).
-- [ ] Worker tick that calls `gmail/poller.Tick` for every
+- [x] Worker tick that calls `gmail/poller.Tick` for every
       connected mailbox on a 2-minute cadence (alongside the
       existing sender tick — same worker process). Cursor stored on
       `gmail_accounts.last_history_id`, last-polled time on
       `last_polled_at`.
-- [ ] On a `reply` classification: call
+- [x] On a `reply` classification: call
       `suppression.RecordReply(...)`, update the relevant
       `campaign_leads.status='replied'`, write an `email_events` row
       with `event_type='replied'` + the inbound message's
       `gmail_message_id`.
-- [ ] Frontend: a "Re-engage" action on a replied lead's row in
+- [x] Frontend: a "Re-engage" action on a replied lead's row in
       the campaign-leads view that clears the suppression-by-reply
       and flips `campaign_leads.status` back to `active`.
       Backend route `POST /api/v1/campaigns/<id>/leads/<lead-id>/reengage`.
-- [ ] Unit tests for `gmail/poller`:
+- [x] Unit tests for `gmail/poller`:
   - happy path: cursor advances, reply classified, bounce
     classified, unrelated ignored,
   - edge cases: cursor missing (first poll), history-id rotated
     by Gmail (full mailbox re-sync triggered), expired token
     (auto-refresh then retry),
   - failure paths: network error, rate limit, malformed response.
-- [ ] Unit tests for worker tick: suppression event-recorder called
+- [x] Unit tests for worker tick: suppression event-recorder called
       on classified reply, campaign_lead.status updated, event row
       written.
-- [ ] Worker survives a transient Gmail outage: a failing tick logs
+- [x] Worker survives a transient Gmail outage: a failing tick logs
       the error and returns; next tick retries from the saved
       cursor.
 - [ ] Manual local verification: connect operator's Gmail, run a
       campaign to a second mailbox, reply from the second mailbox,
       confirm within 2-3 minutes the campaign_lead is `replied` and
-      no further sends fire.
+      no further sends fire. **Deferred — blocked on the same
+      prerequisite chain as #3's manual step (Connect Gmail UI from
+      [#8](./08-settings-real-data.md), OAuth client in Google Cloud
+      Console, public HTTPS callback tunnel, `GOOGLE_*` secrets in
+      `.env.backend`). Tick once those are all green.**
 
 ## Modules touched
 
