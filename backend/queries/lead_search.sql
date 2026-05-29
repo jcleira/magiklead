@@ -6,9 +6,13 @@
 -- infer nullability through LEFT JOIN or scalar subqueries, so
 -- splitting the query keeps both sides cleanly typed.
 --
--- Per plan §T12. The plan spec also lists industries, company_size,
--- and locations — those columns don't exist in the schema yet, so
--- those filters are intentionally omitted.
+-- Per plan §T12 + issue #7 (PDL integration). When industries,
+-- company_size, locations, or require_fresh is supplied, the query
+-- gates results to canonical rows that match the PDL filter
+-- dimensions (industries on organizations, size_range, person
+-- location) and to rows whose updated_at falls within the 90-day
+-- staleness window. If the result is empty the handler then routes
+-- to PDL and re-queries.
 --
 -- Performance: title fuzzy match rides the GIN trgm index on
 -- employments.title; is_current uses the partial index. The email
@@ -21,10 +25,13 @@ SELECT
     p.canonical_name  AS person_canonical_name,
     p.first_name,
     p.last_name,
+    p.location,
     e.title,
     o.id              AS organization_id,
     o.canonical_name  AS organization_name,
     o.primary_domain,
+    o.industries,
+    o.size_range,
     COALESCE(
         (SELECT MAX(similarity(e.title, t))
          FROM unnest(COALESCE(sqlc.narg('titles')::text[], ARRAY[]::text[])) AS t),
@@ -46,6 +53,15 @@ WHERE
         SELECT 1 FROM emails em
         WHERE em.person_id = p.id AND em.verified_at IS NOT NULL
     ))
+    AND (sqlc.narg('industries')::text[] IS NULL OR o.industries && sqlc.narg('industries')::text[])
+    AND (sqlc.narg('company_size')::text IS NULL OR o.size_range = sqlc.narg('company_size')::text)
+    AND (sqlc.narg('locations')::text[] IS NULL OR EXISTS (
+        SELECT 1
+        FROM unnest(sqlc.narg('locations')::text[]) AS loc
+        WHERE p.location ILIKE '%' || loc || '%'
+    ))
+    AND (NOT sqlc.arg('require_fresh')::boolean
+         OR p.updated_at > NOW() - INTERVAL '90 days')
 ORDER BY title_score DESC NULLS LAST,
          p.canonical_name ASC,
          p.id ASC
@@ -62,7 +78,8 @@ SELECT DISTINCT ON (em.person_id)
     em.email,
     em.verified_at,
     em.is_catchall,
-    em.bounce_count
+    em.bounce_count,
+    em.verification_method
 FROM emails em
 WHERE em.person_id = ANY(sqlc.arg('person_ids')::uuid[])
 ORDER BY em.person_id,

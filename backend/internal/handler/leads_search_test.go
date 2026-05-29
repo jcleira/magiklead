@@ -1,7 +1,6 @@
 package handler
 
 import (
-	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -100,35 +99,11 @@ func TestToSearchResult_NoEmail(t *testing.T) {
 	}
 }
 
-func TestSearch_RejectsUnsupportedFilters(t *testing.T) {
-	cases := map[string]leadSearchRequest{
-		"industries":   {Industries: []string{"SaaS"}},
-		"company_size": {CompanySize: "100-500"},
-		"locations":    {Locations: []string{"United States"}},
-	}
-	h := &LeadSearchHandler{}
-	for name, body := range cases {
-		t.Run(name, func(t *testing.T) {
-			buf, _ := json.Marshal(body)
-			req := httptest.NewRequest(http.MethodPost, "/api/v1/leads/search", strings.NewReader(string(buf)))
-			req.Header.Set("Content-Type", "application/json")
-			rr := httptest.NewRecorder()
-
-			h.Search(rr, req)
-
-			if rr.Code != http.StatusNotImplemented {
-				t.Errorf("status=%d want %d", rr.Code, http.StatusNotImplemented)
-			}
-			var resp map[string]string
-			if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
-				t.Fatalf("unmarshal: %v", err)
-			}
-			if resp["code"] != "filter_unsupported" {
-				t.Errorf("code=%q", resp["code"])
-			}
-		})
-	}
-}
+// Issue #7 lifted the 501 rejection — industries / company_size /
+// locations / description are real filter dimensions now, flowing
+// through to SearchPersons (canonical) and, on a miss, to PDL.
+// Decoded request shapes for those filters are exercised end-to-end
+// in leads_search_pdl_test.go.
 
 func TestSearch_BadJSON(t *testing.T) {
 	h := &LeadSearchHandler{}

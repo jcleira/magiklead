@@ -98,3 +98,43 @@ func (q *Queries) ListEmailEvents(ctx context.Context, campaignLeadID pgtype.UUI
 	}
 	return items, nil
 }
+
+const listEmailEventsForExport = `-- name: ListEmailEventsForExport :many
+SELECT ee.id, ee.campaign_lead_id, ee.event_type, ee.step, ee.metadata, ee.created_at, ee.gmail_message_id
+FROM email_events ee
+JOIN campaign_leads cl ON cl.id = ee.campaign_lead_id
+JOIN campaigns c       ON c.id  = cl.campaign_id
+WHERE c.tenant_id = $1
+ORDER BY ee.created_at
+`
+
+// ListEmailEventsForExport dumps every email_event tied to a tenant
+// (via campaign_leads → campaigns). Used by the GDPR account-export
+// endpoint (issue #11). Raw rows, oldest first.
+func (q *Queries) ListEmailEventsForExport(ctx context.Context, tenantID pgtype.UUID) ([]EmailEvent, error) {
+	rows, err := q.db.Query(ctx, listEmailEventsForExport, tenantID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []EmailEvent{}
+	for rows.Next() {
+		var i EmailEvent
+		if err := rows.Scan(
+			&i.ID,
+			&i.CampaignLeadID,
+			&i.EventType,
+			&i.Step,
+			&i.Metadata,
+			&i.CreatedAt,
+			&i.GmailMessageID,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}

@@ -95,21 +95,24 @@ func (h *TenantLeadHandler) Add(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Increment usage after the row is in. Upsert path (re-saving an
-	// existing lead) still increments — callers that want "reset
-	// status without double-counting" should PATCH instead.
-	if err := h.queries.IncrementLeadsUsed(r.Context(), repository.IncrementLeadsUsedParams{
-		TenantID:  pgUUID(tenantID),
-		LeadsUsed: pgtype.Int4{Int32: 1, Valid: true},
-	}); err != nil {
-		// Don't fail the user-facing request on a counter drift; log
-		// and continue. The nightly reset + GetSubscription fallback
-		// keep the system from blocking on a stuck counter.
-		// (Intentional: quota drift > UX drift.)
-		_ = err
+	// Increment leads_used only when this was a fresh INSERT — re-saving
+	// the same person across campaigns / sequences must not double-count
+	// against the tenant's monthly quota (issue #7 AC). The xmax=0 trick
+	// in the SQL exposes the insert/update distinction as row.Inserted.
+	if row.Inserted {
+		if err := h.queries.IncrementLeadsUsed(r.Context(), repository.IncrementLeadsUsedParams{
+			TenantID:  pgUUID(tenantID),
+			LeadsUsed: pgtype.Int4{Int32: 1, Valid: true},
+		}); err != nil {
+			// Don't fail the user-facing request on a counter drift;
+			// the nightly reset + GetSubscription fallback keep the
+			// system from blocking on a stuck counter. (Intentional:
+			// quota drift > UX drift.)
+			_ = err
+		}
 	}
 
-	apierr.WriteJSON(w, http.StatusCreated, toTenantLeadFromRow(row))
+	apierr.WriteJSON(w, http.StatusCreated, toTenantLeadFromAddRow(row))
 }
 
 // List handles GET /api/v1/tenant_leads?status=new&limit=50&offset=0.
@@ -241,6 +244,19 @@ func (h *TenantLeadHandler) resolveUserID(w http.ResponseWriter, r *http.Request
 }
 
 func toTenantLeadFromRow(tl repository.TenantLead) tenantLeadResponse {
+	out := tenantLeadResponse{
+		PersonID: fmtUUID(tl.PersonID),
+		Status:   tl.Status,
+		AddedAt:  tl.AddedAt.Time.Format("2006-01-02T15:04:05Z07:00"),
+	}
+	if tl.Notes.Valid {
+		v := tl.Notes.String
+		out.Notes = &v
+	}
+	return out
+}
+
+func toTenantLeadFromAddRow(tl repository.AddTenantLeadRow) tenantLeadResponse {
 	out := tenantLeadResponse{
 		PersonID: fmtUUID(tl.PersonID),
 		Status:   tl.Status,

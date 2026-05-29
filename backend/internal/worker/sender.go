@@ -3,16 +3,17 @@ package worker
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"math/rand"
-	"net/smtp"
 	"strings"
 	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgtype"
 
+	"github.com/jcleira/magiklead/backend/internal/gmail"
 	"github.com/jcleira/magiklead/backend/internal/repository"
 	"github.com/jcleira/magiklead/backend/internal/suppression"
 )
@@ -24,16 +25,33 @@ type SequenceStep struct {
 	Body      string `json:"body"`
 }
 
-// StartSendLoop runs every 60 seconds, finds leads that are due for their
-// next email, and sends via SMTP.
-func StartSendLoop(ctx context.Context, queries *repository.Queries, supp *suppression.Module) {
+// SendFunc is the seam between worker and gmail.Sender. Keeping it as
+// a function-shaped seam (rather than a full interface) makes the
+// test fake one-line: stubSend := func(...) (*gmail.SendResult, error) { ... }.
+// Production wires this with gmail.NewSender(cfg).Send.
+type SendFunc func(ctx context.Context, account gmail.ConnectedAccount, msg gmail.Message) (*gmail.SendResult, error)
+
+// UnsubscribeConfig carries everything processQueue needs to mint the
+// RFC 8058 List-Unsubscribe headers on every outbound message (issue
+// #6). The Secret MUST match the api's UNSUBSCRIBE_SIGNING_SECRET so
+// tokens minted here verify at /api/v1/public/unsubscribe.
+type UnsubscribeConfig struct {
+	Secret     []byte
+	AppURL     string // base URL of the api, e.g. http://api-mvp.magiklead.localhost
+	MailDomain string // bare hostname for the mailto local-part, e.g. mail.magiklead.com
+}
+
+// StartSendLoop runs every 60 seconds, finds leads that are due for
+// their next email, and sends via the supplied SendFunc. Every
+// outbound message carries the RFC 8058 List-Unsubscribe pair built
+// from unsubCfg.
+func StartSendLoop(ctx context.Context, queries *repository.Queries, supp *suppression.Module, send SendFunc, unsubCfg UnsubscribeConfig) {
 	ticker := time.NewTicker(60 * time.Second)
 	defer ticker.Stop()
 
 	log.Println("Email send loop started (checking every 60s)")
 
-	// Run immediately on start, then every tick
-	processQueue(ctx, queries, supp)
+	processQueue(ctx, queries, supp, send, unsubCfg)
 
 	for {
 		select {
@@ -41,19 +59,17 @@ func StartSendLoop(ctx context.Context, queries *repository.Queries, supp *suppr
 			log.Println("Email send loop stopping")
 			return
 		case <-ticker.C:
-			processQueue(ctx, queries, supp)
+			processQueue(ctx, queries, supp, send, unsubCfg)
 		}
 	}
 }
 
-func processQueue(ctx context.Context, queries *repository.Queries, supp *suppression.Module) {
-	// Get leads that are due (next_send_at <= NOW, status = active)
-	dueLeads, err := queries.GetDueLeads(ctx, 10) // Process 10 at a time
+func processQueue(ctx context.Context, queries *repository.Queries, supp *suppression.Module, send SendFunc, unsubCfg UnsubscribeConfig) {
+	dueLeads, err := queries.GetDueLeads(ctx, 10)
 	if err != nil {
 		log.Printf("Send loop: error getting due leads: %v", err)
 		return
 	}
-
 	if len(dueLeads) == 0 {
 		return
 	}
@@ -62,7 +78,6 @@ func processQueue(ctx context.Context, queries *repository.Queries, supp *suppre
 
 	for _, lead := range dueLeads {
 		if lead.Email == "" {
-			// Skip leads without email — mark exhausted
 			queries.UpdateCampaignLeadStep(ctx, repository.UpdateCampaignLeadStepParams{
 				ID:          lead.ID,
 				CurrentStep: lead.CurrentStep,
@@ -71,14 +86,12 @@ func processQueue(ctx context.Context, queries *repository.Queries, supp *suppre
 			continue
 		}
 
-		// Get the campaign to read the sequence
 		campaign, err := getCampaignForLead(ctx, queries, lead.CampaignID)
 		if err != nil {
 			log.Printf("Send loop: can't get campaign for lead %s: %v", fmtID(lead.ID), err)
 			continue
 		}
 
-		// Parse sequence
 		var sequence []SequenceStep
 		if err := json.Unmarshal(campaign.Sequence, &sequence); err != nil {
 			log.Printf("Send loop: can't parse sequence: %v", err)
@@ -87,7 +100,6 @@ func processQueue(ctx context.Context, queries *repository.Queries, supp *suppre
 
 		currentStep := int(lead.CurrentStep.Int32)
 		if currentStep >= len(sequence) {
-			// All steps done — mark exhausted
 			queries.UpdateCampaignLeadStep(ctx, repository.UpdateCampaignLeadStepParams{
 				ID:          lead.ID,
 				CurrentStep: pgtype.Int4{Int32: int32(currentStep), Valid: true},
@@ -124,69 +136,77 @@ func processQueue(ctx context.Context, queries *repository.Queries, supp *suppre
 			continue
 		}
 
-		// Get email account for this campaign's tenant
-		emailAccounts, err := queries.ListEmailAccounts(ctx, campaign.TenantID)
-		if err != nil || len(emailAccounts) == 0 {
-			log.Printf("Send loop: no email account for tenant %s", fmtID(campaign.TenantID))
+		// Pick the tenant's first connected Gmail account. Multi-
+		// account-per-tenant is out of scope for the MVP; the operator
+		// picks one mailbox per workspace.
+		gmailAccounts, err := queries.ListGmailAccounts(ctx, campaign.TenantID)
+		if err != nil || len(gmailAccounts) == 0 {
+			log.Printf("Send loop: no connected Gmail account for tenant %s", fmtID(campaign.TenantID))
 			continue
 		}
-		account := emailAccounts[0]
+		account := gmailAccounts[0]
 
-		// Personalize the email
 		subject := personalize(step.Subject, lead)
 		body := personalize(step.Body, lead)
+		// "Sent via MagikLead" branding footer. CAN-SPAM compliance
+		// itself is satisfied by the List-Unsubscribe headers below.
+		body += `<div style="margin-top:20px;padding-top:10px;border-top:1px solid #eee;font-size:11px;color:#999;"><p>Sent via MagikLead</p></div>`
 
-		// Add CAN-SPAM footer
-		body += "\n\n---\nSent via MagikLead. If you'd like to stop receiving these emails, reply with 'unsubscribe'."
-
-		// Send
-		log.Printf("Sending step %d to %s (%s at %s)", currentStep+1, lead.Email, lead.FirstName, lead.Company)
-		err = sendSMTP(account, lead.Email, subject, body)
-		if err != nil {
-			log.Printf("Send FAILED to %s: %v", lead.Email, err)
-			// Don't advance step — will retry next cycle
-			// If it's a permanent failure (bad email), mark bounced
-			if isBounce(err) {
-				queries.UpdateCampaignLeadStep(ctx, repository.UpdateCampaignLeadStepParams{
-					ID:          lead.ID,
-					CurrentStep: pgtype.Int4{Int32: int32(currentStep), Valid: true},
-					Status:      pgtype.Text{String: "bounced", Valid: true},
-				})
-				// Log the bounce
-				queries.CreateEmailEvent(ctx, repository.CreateEmailEventParams{
-					CampaignLeadID: lead.ID,
-					EventType:      "bounced",
-					Step:           int32(currentStep + 1),
-					Metadata:       []byte(fmt.Sprintf(`{"error":"%s"}`, err.Error())),
-				})
-			}
+		// Issue #6: every outbound message carries the RFC 8058
+		// one-click headers. If the token mint fails we refuse to
+		// send rather than emit a message that lacks the deliverability
+		// gate — Gmail would mark such mail as spam.
+		unsubHeaders, hdrErr := gmail.BuildUnsubscribeHeaders(lead.Email, tenant, unsubCfg.Secret, unsubCfg.AppURL, unsubCfg.MailDomain)
+		if hdrErr != nil {
+			log.Printf("Send loop: build unsubscribe headers failed for %s: %v — skipping this tick", lead.Email, hdrErr)
 			continue
 		}
 
-		log.Printf("Sent step %d to %s successfully", currentStep+1, lead.Email)
+		log.Printf("Sending step %d to %s (%s at %s)", currentStep+1, lead.Email, lead.FirstName, lead.Company)
 
-		// Log the sent event
+		result, sendErr := send(ctx, toConnectedAccount(account), gmail.Message{
+			FromName: account.Email,
+			To:       lead.Email,
+			Subject:  subject,
+			Body:     body,
+			Headers:  unsubHeaders,
+		})
+		if sendErr != nil {
+			reason := classifyWorkerSendError(sendErr)
+			log.Printf("Send FAILED to %s: %v (reason=%s)", lead.Email, sendErr, reason)
+			meta, _ := json.Marshal(map[string]string{
+				"reason": reason,
+				"error":  sendErr.Error(),
+			})
+			queries.CreateEmailEvent(ctx, repository.CreateEmailEventParams{
+				CampaignLeadID: lead.ID,
+				EventType:      "failed",
+				Step:           int32(currentStep + 1),
+				Metadata:       meta,
+			})
+			continue
+		}
+
+		log.Printf("Sent step %d to %s successfully (msg=%s)", currentStep+1, lead.Email, result.MessageID)
+
 		queries.CreateEmailEvent(ctx, repository.CreateEmailEventParams{
 			CampaignLeadID: lead.ID,
 			EventType:      "sent",
-			Step:            int32(currentStep + 1),
+			Step:           int32(currentStep + 1),
+			GmailMessageID: pgText(result.MessageID),
 		})
 
-		// Advance to next step
 		nextStep := currentStep + 1
 		var nextSendAt pgtype.Timestamptz
 		var nextStatus pgtype.Text
 
 		if nextStep >= len(sequence) {
-			// Last step done
 			nextStatus = pgtype.Text{String: "exhausted", Valid: true}
 		} else {
-			// Schedule next step
 			delayDays := sequence[nextStep].DelayDays
 			if delayDays < 1 {
 				delayDays = 1
 			}
-			// Add some randomness: +/- 2 hours
 			jitter := time.Duration(rand.Intn(4)-2) * time.Hour
 			nextTime := time.Now().Add(time.Duration(delayDays)*24*time.Hour + jitter)
 			nextSendAt = pgtype.Timestamptz{Time: nextTime, Valid: true}
@@ -200,49 +220,43 @@ func processQueue(ctx context.Context, queries *repository.Queries, supp *suppre
 			Status:      nextStatus,
 		})
 
-		// Increment email account daily count
-		queries.IncrementEmailSent(ctx, account.ID)
-
-		// Random delay between sends (2-5 minutes)
-		delay := time.Duration(120+rand.Intn(180)) * time.Second
-		log.Printf("Waiting %s before next send...", delay.Round(time.Second))
-		time.Sleep(delay)
+		queries.IncrementDailySent(ctx, account.ID)
 	}
 }
 
-func sendSMTP(account repository.EmailAccount, to, subject, htmlBody string) error {
-	host := account.SmtpHost.String
-	port := account.SmtpPort.Int32
-	username := account.SmtpUsername.String
-	password := account.SmtpPassword.String
-	from := account.Email
-	senderName := account.SenderName.String
-	if senderName == "" {
-		senderName = from
+// toConnectedAccount projects a repository.GmailAccount onto the
+// minimal shape gmail.Sender needs. Keeping the projection here means
+// the gmail package never imports repository, which keeps the deep
+// module DB-free for testing.
+func toConnectedAccount(a repository.GmailAccount) gmail.ConnectedAccount {
+	var expiry time.Time
+	if a.TokenExpiry.Valid {
+		expiry = a.TokenExpiry.Time
 	}
-
-	if host == "" || password == "" {
-		return fmt.Errorf("SMTP not configured for account %s", from)
+	return gmail.ConnectedAccount{
+		Email:        a.Email,
+		AccessToken:  a.AccessToken,
+		RefreshToken: a.RefreshToken,
+		TokenExpiry:  expiry,
 	}
+}
 
-	addr := fmt.Sprintf("%s:%d", host, port)
-
-	// Build MIME message
-	var msg strings.Builder
-	msg.WriteString(fmt.Sprintf("From: %s <%s>\r\n", senderName, from))
-	msg.WriteString(fmt.Sprintf("To: %s\r\n", to))
-	msg.WriteString(fmt.Sprintf("Subject: %s\r\n", subject))
-	msg.WriteString("MIME-Version: 1.0\r\n")
-	msg.WriteString("Content-Type: text/html; charset=utf-8\r\n")
-	msg.WriteString(fmt.Sprintf("Date: %s\r\n", time.Now().Format(time.RFC1123Z)))
-	msg.WriteString("\r\n")
-
-	// Convert plain text body to basic HTML
-	htmlContent := "<html><body><p>" + strings.ReplaceAll(htmlBody, "\n", "<br>") + "</p></body></html>"
-	msg.WriteString(htmlContent)
-
-	auth := smtp.PlainAuth("", username, password, host)
-	return smtp.SendMail(addr, auth, from, []string{to}, []byte(msg.String()))
+// classifyWorkerSendError turns a gmail.Send error into a short
+// reason string for the email_events row. Keeps the metadata column
+// queryable by reason without parsing free-text error messages.
+func classifyWorkerSendError(err error) string {
+	switch {
+	case errors.Is(err, gmail.ErrTokenExpired):
+		return "token_expired"
+	case errors.Is(err, gmail.ErrScopeMissing):
+		return "scope_missing"
+	case errors.Is(err, gmail.ErrMessageRejected):
+		return "rejected"
+	case errors.Is(err, gmail.ErrRateLimited):
+		return "rate_limited"
+	default:
+		return "network"
+	}
 }
 
 func personalize(text string, lead repository.GetDueLeadsRow) string {
@@ -250,29 +264,11 @@ func personalize(text string, lead repository.GetDueLeadsRow) string {
 	if lead.Title.Valid {
 		title = lead.Title.String
 	}
-
 	text = strings.ReplaceAll(text, "{{first_name}}", lead.FirstName)
 	text = strings.ReplaceAll(text, "{{last_name}}", lead.LastName)
 	text = strings.ReplaceAll(text, "{{company}}", lead.Company)
 	text = strings.ReplaceAll(text, "{{title}}", title)
 	return text
-}
-
-func isBounce(err error) bool {
-	msg := err.Error()
-	// Auth errors are OUR problem, not a bounce
-	if strings.Contains(msg, "535") || strings.Contains(msg, "Username and Password not accepted") {
-		return false
-	}
-	// Recipient bounce indicators
-	return strings.Contains(msg, "550") ||
-		strings.Contains(msg, "551") ||
-		strings.Contains(msg, "552") ||
-		strings.Contains(msg, "553") ||
-		strings.Contains(msg, "554") ||
-		strings.Contains(msg, "User unknown") ||
-		strings.Contains(msg, "does not exist") ||
-		strings.Contains(msg, "no such user")
 }
 
 func getCampaignForLead(ctx context.Context, queries *repository.Queries, campaignID pgtype.UUID) (*repository.Campaign, error) {
@@ -289,4 +285,11 @@ func fmtID(u pgtype.UUID) string {
 	}
 	b := u.Bytes
 	return fmt.Sprintf("%x-%x-%x-%x-%x", b[0:4], b[4:6], b[6:8], b[8:10], b[10:16])
+}
+
+func pgText(s string) pgtype.Text {
+	if s == "" {
+		return pgtype.Text{}
+	}
+	return pgtype.Text{String: s, Valid: true}
 }

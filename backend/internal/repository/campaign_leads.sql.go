@@ -299,6 +299,66 @@ func (q *Queries) ListCampaignLeads(ctx context.Context, campaignID pgtype.UUID)
 	return items, nil
 }
 
+const listCampaignLeadsForExport = `-- name: ListCampaignLeadsForExport :many
+SELECT cl.id, cl.campaign_id, cl.lead_id, cl.status, cl.current_step, cl.next_send_at, cl.last_sent_at, cl.last_opened_at, cl.last_replied_at, cl.created_at, cl.person_id
+FROM campaign_leads cl
+JOIN campaigns c ON c.id = cl.campaign_id
+WHERE c.tenant_id = $1
+ORDER BY cl.created_at
+`
+
+// ListCampaignLeadsForExport dumps every campaign_lead row tied to a
+// tenant's campaigns, raw — no join resolution. Used by the GDPR
+// account-export endpoint (issue #11) to write campaign_leads.json
+// inside the user's archive.
+func (q *Queries) ListCampaignLeadsForExport(ctx context.Context, tenantID pgtype.UUID) ([]CampaignLead, error) {
+	rows, err := q.db.Query(ctx, listCampaignLeadsForExport, tenantID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []CampaignLead{}
+	for rows.Next() {
+		var i CampaignLead
+		if err := rows.Scan(
+			&i.ID,
+			&i.CampaignID,
+			&i.LeadID,
+			&i.Status,
+			&i.CurrentStep,
+			&i.NextSendAt,
+			&i.LastSentAt,
+			&i.LastOpenedAt,
+			&i.LastRepliedAt,
+			&i.CreatedAt,
+			&i.PersonID,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const markCampaignLeadBounced = `-- name: MarkCampaignLeadBounced :exec
+UPDATE campaign_leads
+SET status = 'bounced'
+WHERE id = $1
+`
+
+// MarkCampaignLeadBounced halts the sequence on a hard bounce. The
+// sender's GetDueLeads query filters WHERE status='active' so a
+// bounced row stops receiving sends on the very next tick. We do
+// not clear next_send_at — keeping the timestamp around is useful
+// for "when did we last try?" forensics.
+func (q *Queries) MarkCampaignLeadBounced(ctx context.Context, id pgtype.UUID) error {
+	_, err := q.db.Exec(ctx, markCampaignLeadBounced, id)
+	return err
+}
+
 const pauseCampaignLeads = `-- name: PauseCampaignLeads :exec
 UPDATE campaign_leads SET next_send_at = NULL
 WHERE campaign_id = $1 AND status = 'active'

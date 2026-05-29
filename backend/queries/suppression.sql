@@ -113,3 +113,34 @@ WHERE cl.id = $1;
 UPDATE campaign_leads
 SET status = 'replied', last_replied_at = NOW()
 WHERE id = $1;
+
+-- ClearReplyUnsubscribe deletes the reply-reason suppression row for
+-- (tenant, email). Used by the re-engage handler when the operator
+-- decides a reply was actually an auto-responder (out-of-office,
+-- vacation-reply) and wants the sequence to resume. Other reasons
+-- (manual / list-unsub / spam-complaint / hard-bounce / soft-bounce-
+-- threshold) are deliberately NOT touched — only the reply gate is
+-- recoverable; the others are permanent for safety / compliance.
+-- name: ClearReplyUnsubscribe :exec
+DELETE FROM unsubscribes
+WHERE tenant_id = sqlc.arg(tenant_id)
+  AND lower(email) = lower(sqlc.arg(email)::text)
+  AND reason = 'reply';
+
+-- ListUnsubscribesForTenant dumps every tenant-scoped unsubscribe row
+-- (excludes globals where tenant_id IS NULL). Used by the GDPR
+-- account-export endpoint (issue #11) to write unsubscribes.json.
+-- name: ListUnsubscribesForTenant :many
+SELECT * FROM unsubscribes
+WHERE tenant_id = sqlc.arg(tenant_id)
+ORDER BY created_at;
+
+-- ReactivateCampaignLead is the second half of the re-engage flow:
+-- after ClearReplyUnsubscribe lifts the suppression, this flips the
+-- lead back to 'active' and arms next_send_at so the worker picks it
+-- up on the next tick. Step is left unchanged — the sequence
+-- continues from where it was when the reply landed.
+-- name: ReactivateCampaignLead :exec
+UPDATE campaign_leads
+SET status = 'active', next_send_at = NOW(), last_replied_at = NULL
+WHERE id = $1;

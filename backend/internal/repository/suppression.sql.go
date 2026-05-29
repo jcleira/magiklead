@@ -11,6 +11,30 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+const clearReplyUnsubscribe = `-- name: ClearReplyUnsubscribe :exec
+DELETE FROM unsubscribes
+WHERE tenant_id = $1
+  AND lower(email) = lower($2::text)
+  AND reason = 'reply'
+`
+
+type ClearReplyUnsubscribeParams struct {
+	TenantID pgtype.UUID `json:"tenant_id"`
+	Email    string      `json:"email"`
+}
+
+// ClearReplyUnsubscribe deletes the reply-reason suppression row for
+// (tenant, email). Used by the re-engage handler when the operator
+// decides a reply was actually an auto-responder (out-of-office,
+// vacation-reply) and wants the sequence to resume. Other reasons
+// (manual / list-unsub / spam-complaint / hard-bounce / soft-bounce-
+// threshold) are deliberately NOT touched — only the reply gate is
+// recoverable; the others are permanent for safety / compliance.
+func (q *Queries) ClearReplyUnsubscribe(ctx context.Context, arg ClearReplyUnsubscribeParams) error {
+	_, err := q.db.Exec(ctx, clearReplyUnsubscribe, arg.TenantID, arg.Email)
+	return err
+}
+
 const countConsecutiveSoftBounces = `-- name: CountConsecutiveSoftBounces :one
 WITH cl_match AS (
     SELECT cl.id
@@ -143,6 +167,41 @@ func (q *Queries) InsertUnsubscribeTenant(ctx context.Context, arg InsertUnsubsc
 	return err
 }
 
+const listUnsubscribesForTenant = `-- name: ListUnsubscribesForTenant :many
+SELECT id, tenant_id, email, reason, created_at FROM unsubscribes
+WHERE tenant_id = $1
+ORDER BY created_at
+`
+
+// ListUnsubscribesForTenant dumps every tenant-scoped unsubscribe row
+// (excludes globals where tenant_id IS NULL). Used by the GDPR
+// account-export endpoint (issue #11) to write unsubscribes.json.
+func (q *Queries) ListUnsubscribesForTenant(ctx context.Context, tenantID pgtype.UUID) ([]Unsubscribe, error) {
+	rows, err := q.db.Query(ctx, listUnsubscribesForTenant, tenantID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []Unsubscribe{}
+	for rows.Next() {
+		var i Unsubscribe
+		if err := rows.Scan(
+			&i.ID,
+			&i.TenantID,
+			&i.Email,
+			&i.Reason,
+			&i.CreatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const lookupSuppression = `-- name: LookupSuppression :one
 
 SELECT reason
@@ -184,6 +243,22 @@ WHERE id = $1
 
 func (q *Queries) MarkCampaignLeadReplied(ctx context.Context, id pgtype.UUID) error {
 	_, err := q.db.Exec(ctx, markCampaignLeadReplied, id)
+	return err
+}
+
+const reactivateCampaignLead = `-- name: ReactivateCampaignLead :exec
+UPDATE campaign_leads
+SET status = 'active', next_send_at = NOW(), last_replied_at = NULL
+WHERE id = $1
+`
+
+// ReactivateCampaignLead is the second half of the re-engage flow:
+// after ClearReplyUnsubscribe lifts the suppression, this flips the
+// lead back to 'active' and arms next_send_at so the worker picks it
+// up on the next tick. Step is left unchanged — the sequence
+// continues from where it was when the reply landed.
+func (q *Queries) ReactivateCampaignLead(ctx context.Context, id pgtype.UUID) error {
+	_, err := q.db.Exec(ctx, reactivateCampaignLead, id)
 	return err
 }
 

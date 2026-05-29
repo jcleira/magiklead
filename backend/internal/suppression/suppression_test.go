@@ -370,13 +370,93 @@ func TestRecordReply(t *testing.T) {
 	}
 }
 
+// TestClearReply is the re-engage round-trip: RecordReply puts the
+// lead in the exact state the poller produces (suppressed +
+// status='replied'), then ClearReply must lift the reply gate and
+// flip the lead back to 'active' so the worker resumes the sequence.
+func TestClearReply(t *testing.T) {
+	pool := withPool(t)
+	f := newFixture(t, pool, "")
+	ctx := context.Background()
+	m := suppression.New(pool)
+
+	// Arrive at the replied state the way production does.
+	if err := m.RecordReply(ctx, f.campaignLeadID, "<gmail-inbound-1@mail.google.com>"); err != nil {
+		t.Fatalf("RecordReply: %v", err)
+	}
+	if ok, _, err := m.IsSuppressed(ctx, f.tenantID, f.email); err != nil || !ok {
+		t.Fatalf("precondition: expected suppressed after RecordReply (ok=%t err=%v)", ok, err)
+	}
+
+	if err := m.ClearReply(ctx, f.campaignLeadID); err != nil {
+		t.Fatalf("ClearReply: %v", err)
+	}
+
+	// Reply gate lifted — the sender's IsSuppressed check now passes.
+	ok, reason, err := m.IsSuppressed(ctx, f.tenantID, f.email)
+	if err != nil {
+		t.Fatalf("IsSuppressed after ClearReply: %v", err)
+	}
+	if ok {
+		t.Errorf("still suppressed after ClearReply (reason=%q)", reason)
+	}
+
+	// Lead reactivated so the next worker tick picks it up.
+	var status string
+	var nextSendAt *time.Time
+	if err := pool.QueryRow(ctx, `SELECT status, next_send_at FROM campaign_leads WHERE id = $1`, f.campaignLeadID).Scan(&status, &nextSendAt); err != nil {
+		t.Fatalf("scan lead: %v", err)
+	}
+	if status != "active" {
+		t.Errorf("campaign_leads.status=%q want 'active'", status)
+	}
+	if nextSendAt == nil {
+		t.Errorf("next_send_at is NULL — worker won't pick the lead up")
+	}
+}
+
+// TestClearReply_DoesNotLiftHardBounce pins the safety invariant: a
+// re-engage only clears the *reply* gate. A hard-bounce suppression
+// on the same address must survive — re-sending to a dead mailbox
+// would burn the tenant's sender reputation.
+func TestClearReply_DoesNotLiftHardBounce(t *testing.T) {
+	pool := withPool(t)
+	f := newFixture(t, pool, "")
+	ctx := context.Background()
+	m := suppression.New(pool)
+
+	if err := m.RecordReply(ctx, f.campaignLeadID, "<inbound@x>"); err != nil {
+		t.Fatalf("RecordReply: %v", err)
+	}
+	// Same address also hard-bounced (e.g. a later step before the
+	// reply was processed) — independent suppression vector.
+	if err := m.RecordHardBounce(ctx, f.email, f.tenantID, nil); err != nil {
+		t.Fatalf("RecordHardBounce: %v", err)
+	}
+
+	if err := m.ClearReply(ctx, f.campaignLeadID); err != nil {
+		t.Fatalf("ClearReply: %v", err)
+	}
+
+	ok, reason, err := m.IsSuppressed(ctx, f.tenantID, f.email)
+	if err != nil {
+		t.Fatalf("IsSuppressed: %v", err)
+	}
+	if !ok {
+		t.Fatalf("hard-bounce suppression wrongly lifted by ClearReply")
+	}
+	if reason != suppression.ReasonHardBounce {
+		t.Errorf("reason=%q want %q (reply row cleared, hard-bounce kept)", reason, suppression.ReasonHardBounce)
+	}
+}
+
 func TestRecordHardBounce(t *testing.T) {
 	pool := withPool(t)
 	f := newFixture(t, pool, "")
 	ctx := context.Background()
 
 	m := suppression.New(pool)
-	if err := m.RecordHardBounce(ctx, f.email, f.tenantID); err != nil {
+	if err := m.RecordHardBounce(ctx, f.email, f.tenantID, nil); err != nil {
 		t.Fatalf("RecordHardBounce: %v", err)
 	}
 
@@ -403,7 +483,7 @@ func TestRecordHardBounce(t *testing.T) {
 func TestRecordHardBounce_EmptyEmail(t *testing.T) {
 	pool := withPool(t)
 	m := suppression.New(pool)
-	err := m.RecordHardBounce(context.Background(), "", uuid.New())
+	err := m.RecordHardBounce(context.Background(), "", uuid.New(), nil)
 	if err == nil {
 		t.Fatal("expected error for empty email")
 	}
@@ -416,8 +496,12 @@ func TestRecordSoftBounce_BelowThreshold(t *testing.T) {
 
 	m := suppression.New(pool)
 	for i := 0; i < suppression.SoftBounceThreshold-1; i++ {
-		if err := m.RecordSoftBounce(ctx, f.email, f.tenantID); err != nil {
+		count, err := m.RecordSoftBounce(ctx, f.email, f.tenantID, nil)
+		if err != nil {
 			t.Fatalf("RecordSoftBounce #%d: %v", i, err)
+		}
+		if want := int64(i + 1); count != want {
+			t.Errorf("RecordSoftBounce #%d returned count=%d want %d", i, count, want)
 		}
 	}
 
@@ -438,10 +522,16 @@ func TestRecordSoftBounce_ReachesThreshold(t *testing.T) {
 	ctx := context.Background()
 
 	m := suppression.New(pool)
+	var lastCount int64
 	for i := 0; i < suppression.SoftBounceThreshold; i++ {
-		if err := m.RecordSoftBounce(ctx, f.email, f.tenantID); err != nil {
+		count, err := m.RecordSoftBounce(ctx, f.email, f.tenantID, nil)
+		if err != nil {
 			t.Fatalf("RecordSoftBounce #%d: %v", i, err)
 		}
+		lastCount = count
+	}
+	if lastCount != int64(suppression.SoftBounceThreshold) {
+		t.Errorf("final count=%d want %d", lastCount, suppression.SoftBounceThreshold)
 	}
 
 	// IsSuppressed must report soft-bounce-threshold; layer 1 catches

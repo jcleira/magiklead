@@ -72,7 +72,30 @@ suffix and replants them. Doesn't touch any non-fixture rows.
   Clerk JWT `email` claim — case-insensitive
 - `STRIPE_SECRET_KEY` (optional) — only if you want to exercise T13
 - `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` /
-  `GOOGLE_REDIRECT_URI` (optional) — only for Gmail OAuth send tests
+  `GOOGLE_REDIRECT_URI` (optional) — only for Gmail OAuth send tests.
+  `GOOGLE_REDIRECT_URI` MUST include the `/v1` prefix
+  (`…/api/v1/gmail/callback`) and match a redirect URI registered on
+  the Google OAuth client exactly; a value without `/v1` 404s
+- `GMAIL_OAUTH_STATE_SECRET` — required by the api when
+  `GOOGLE_CLIENT_ID` is set. HS256 key that signs the OAuth `state`
+  param carrying the tenant + connecting user across the Google consent
+  redirect; the `/api/v1/gmail/callback` route is public (Google
+  arrives with no Clerk session) and trusts only this signed state. Any
+  opaque 32+ byte string; keep it distinct from
+  `UNSUBSCRIBE_SIGNING_SECRET`
+- `PDL_API_KEY` (optional) — People Data Labs key for the lead-search
+  PDL fallback (issue #7). Absent in dev: api logs a warning and falls
+  through to canonical-only mode (the search still works against the
+  existing person graph; PDL filter dimensions are honoured against
+  whatever the canonical already has)
+- `UNSUBSCRIBE_SIGNING_SECRET` — required by both api and worker.
+  HS256 key that signs the RFC 8058 List-Unsubscribe tokens on
+  outbound campaign messages and verifies them at the public
+  `/api/v1/public/unsubscribe` endpoint. Both processes MUST share
+  the same value; any opaque 32+ byte string works
+- `UNSUBSCRIBE_MAIL_DOMAIN` — required by the worker. Bare hostname
+  used in the mailto channel of List-Unsubscribe (e.g.
+  `mail.magiklead.com`). See the operational gap below
 
 `~/.config/devpods/magiklead/.env.frontend`:
 
@@ -85,6 +108,18 @@ Devpods generates `DATABASE_URL`, `REDIS_URL`, `S3_*`, `APP_URL`,
 `.env.backend`. The api compose entrypoint reads
 `/shared/stripe-webhook-secret` (written by the `stripe-listen`
 container) and exports `STRIPE_WEBHOOK_SECRET` before starting air.
+
+### Known operational gaps
+
+- **Unsubscribe mailto channel is advertised but not processed.**
+  Every outbound campaign message carries
+  `List-Unsubscribe: <mailto:unsubscribe+<token>@$UNSUBSCRIBE_MAIL_DOMAIN>, <https://…>`
+  because Gmail's deliverability gate requires both channels to be
+  present. There is no inbound-email infrastructure in this release,
+  so emails sent to that mailto address pile up unanswered. The
+  https one-click channel is the only path that actually records
+  the unsubscribe today. Wire inbound parsing in a follow-up before
+  scaling beyond the seven-day launch window.
 
 ### Clerk dashboard prereqs
 

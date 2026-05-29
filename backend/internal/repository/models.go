@@ -69,6 +69,7 @@ type Email struct {
 	BounceCount        pgtype.Int4        `json:"bounce_count"`
 	IsCatchall         pgtype.Bool        `json:"is_catchall"`
 	CreatedAt          pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt          pgtype.Timestamptz `json:"updated_at"`
 }
 
 type EmailAccount struct {
@@ -195,6 +196,8 @@ type Organization struct {
 	PrimaryDomain pgtype.Text        `json:"primary_domain"`
 	CreatedAt     pgtype.Timestamptz `json:"created_at"`
 	UpdatedAt     pgtype.Timestamptz `json:"updated_at"`
+	Industries    []string           `json:"industries"`
+	SizeRange     pgtype.Text        `json:"size_range"`
 }
 
 type OrganizationAlias struct {
@@ -220,6 +223,7 @@ type Person struct {
 	CreatedAt      pgtype.Timestamptz `json:"created_at"`
 	UpdatedAt      pgtype.Timestamptz `json:"updated_at"`
 	NormalizedName string             `json:"normalized_name"`
+	Location       pgtype.Text        `json:"location"`
 }
 
 type PersonAlias struct {

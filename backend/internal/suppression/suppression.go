@@ -152,17 +152,54 @@ func (m *Module) RecordReply(ctx context.Context, campaignLeadID uuid.UUID, gmai
 	return nil
 }
 
+// ClearReply is the re-engage path: lift the reply suppression on a
+// campaign_lead and flip its status back to 'active' so the worker
+// picks it up next tick. Only the reply reason is reversible —
+// hard-bounce / soft-bounce-threshold / manual / list-unsub /
+// spam-complaint stay in place even after a re-engage attempt, since
+// those signal "address is bad" or "recipient said no," not "the
+// auto-responder fired."
+//
+// Idempotent: if the unsubscribe row has already been cleared (or
+// never existed), the campaign_lead is still reactivated.
+func (m *Module) ClearReply(ctx context.Context, campaignLeadID uuid.UUID) error {
+	lead := pgUUID(campaignLeadID)
+
+	addr, err := m.q.ResolveCampaignLeadAddress(ctx, lead)
+	if err != nil {
+		return fmt.Errorf("suppression: resolve lead address: %w", err)
+	}
+	if addr.Email != "" && addr.TenantID.Valid {
+		if err := m.q.ClearReplyUnsubscribe(ctx, repository.ClearReplyUnsubscribeParams{
+			TenantID: addr.TenantID,
+			Email:    addr.Email,
+		}); err != nil {
+			return fmt.Errorf("suppression: clear reply unsubscribe: %w", err)
+		}
+	}
+	if err := m.q.ReactivateCampaignLead(ctx, lead); err != nil {
+		return fmt.Errorf("suppression: reactivate campaign_lead: %w", err)
+	}
+	return nil
+}
+
 // RecordHardBounce writes a 'bounced' email_event for the matching
 // campaign_lead (when one exists) and adds a tenant-scoped
 // unsubscribes row so further sends to this address from this tenant
-// are blocked.
-func (m *Module) RecordHardBounce(ctx context.Context, leadEmail string, tenantID uuid.UUID) error {
+// are blocked. extraMeta is merged into the event JSONB so callers
+// (the worker bounce path) can capture the DSN status code and any
+// other context alongside the audit row.
+func (m *Module) RecordHardBounce(ctx context.Context, leadEmail string, tenantID uuid.UUID, extraMeta map[string]string) error {
 	if leadEmail == "" {
 		return errors.New("suppression: RecordHardBounce: empty email")
 	}
 	tenant := pgUUID(tenantID)
 
-	if err := m.writeBounceEvent(ctx, tenant, leadEmail, "bounced"); err != nil {
+	meta := map[string]any{"email": leadEmail}
+	for k, v := range extraMeta {
+		meta[k] = v
+	}
+	if err := m.writeBounceEvent(ctx, tenant, leadEmail, "bounced", meta); err != nil {
 		return err
 	}
 	if err := m.q.InsertUnsubscribeTenant(ctx, repository.InsertUnsubscribeTenantParams{
@@ -179,33 +216,45 @@ func (m *Module) RecordHardBounce(ctx context.Context, leadEmail string, tenantI
 // third consecutive soft bounce for the (tenant, email) pair (with no
 // successful 'sent' event resetting the streak), it also writes a
 // tenant-scoped unsubscribes row with reason 'soft-bounce-threshold'.
-func (m *Module) RecordSoftBounce(ctx context.Context, leadEmail string, tenantID uuid.UUID) error {
+// Returns the post-write consecutive-soft-bounce count so the caller
+// can log/report progress toward the threshold.
+//
+// extraMeta is merged into the event JSONB alongside {"email": ...,
+// "count": <count>} — callers (the worker bounce path) capture the
+// DSN status code there.
+func (m *Module) RecordSoftBounce(ctx context.Context, leadEmail string, tenantID uuid.UUID, extraMeta map[string]string) (int64, error) {
 	if leadEmail == "" {
-		return errors.New("suppression: RecordSoftBounce: empty email")
+		return 0, errors.New("suppression: RecordSoftBounce: empty email")
 	}
 	tenant := pgUUID(tenantID)
 
-	if err := m.writeBounceEvent(ctx, tenant, leadEmail, "soft-bounce"); err != nil {
-		return err
-	}
-
-	count, err := m.q.CountConsecutiveSoftBounces(ctx, repository.CountConsecutiveSoftBouncesParams{
+	priorCount, err := m.q.CountConsecutiveSoftBounces(ctx, repository.CountConsecutiveSoftBouncesParams{
 		TenantID: tenant,
 		Email:    leadEmail,
 	})
 	if err != nil {
-		return fmt.Errorf("suppression: count soft bounces: %w", err)
+		return 0, fmt.Errorf("suppression: count soft bounces: %w", err)
 	}
-	if count >= SoftBounceThreshold {
+	newCount := priorCount + 1
+
+	meta := map[string]any{"email": leadEmail, "count": newCount}
+	for k, v := range extraMeta {
+		meta[k] = v
+	}
+	if err := m.writeBounceEvent(ctx, tenant, leadEmail, "soft-bounce", meta); err != nil {
+		return newCount, err
+	}
+
+	if newCount >= SoftBounceThreshold {
 		if err := m.q.InsertUnsubscribeTenant(ctx, repository.InsertUnsubscribeTenantParams{
 			TenantID: tenant,
 			Email:    leadEmail,
 			Reason:   ReasonSoftBounceThreshold,
 		}); err != nil {
-			return fmt.Errorf("suppression: write soft-bounce-threshold unsubscribe: %w", err)
+			return newCount, fmt.Errorf("suppression: write soft-bounce-threshold unsubscribe: %w", err)
 		}
 	}
-	return nil
+	return newCount, nil
 }
 
 // RecordUnsubscribe writes an unsubscribes row. tenantID == nil
@@ -235,12 +284,16 @@ func (m *Module) RecordUnsubscribe(ctx context.Context, email string, tenantID *
 
 // writeBounceEvent attempts to write a bounce event row against the
 // most-recently-created campaign_lead in this tenant that resolves to
-// the given email. If no such campaign_lead exists (e.g. the address
+// the given email. meta is serialised verbatim as the event JSONB —
+// callers always include {"email": email} and may add fields like
+// {"dsn_status_code": "...", "count": 3}.
+//
+// If no campaign_lead exists for this address (e.g. the address
 // reached the suppression module via a vector other than an active
 // campaign), we skip the audit row but still let the caller proceed
 // to its unsubscribes write — the suppression invariant is still
 // upheld via the unsubscribes table.
-func (m *Module) writeBounceEvent(ctx context.Context, tenant pgtype.UUID, email, eventType string) error {
+func (m *Module) writeBounceEvent(ctx context.Context, tenant pgtype.UUID, email, eventType string, meta map[string]any) error {
 	leadID, err := m.q.FindCampaignLeadForEmail(ctx, repository.FindCampaignLeadForEmailParams{
 		TenantID: tenant,
 		Email:    email,
@@ -251,7 +304,7 @@ func (m *Module) writeBounceEvent(ctx context.Context, tenant pgtype.UUID, email
 		}
 		return fmt.Errorf("suppression: find campaign_lead for %s: %w", email, err)
 	}
-	meta, err := json.Marshal(map[string]string{"email": email})
+	metaBytes, err := json.Marshal(meta)
 	if err != nil {
 		return fmt.Errorf("suppression: marshal event metadata: %w", err)
 	}
@@ -259,7 +312,7 @@ func (m *Module) writeBounceEvent(ctx context.Context, tenant pgtype.UUID, email
 		CampaignLeadID: leadID,
 		EventType:      eventType,
 		Step:           0,
-		Metadata:       meta,
+		Metadata:       metaBytes,
 	}); err != nil {
 		return fmt.Errorf("suppression: write %s event: %w", eventType, err)
 	}

@@ -142,6 +142,48 @@ func (q *Queries) ListGmailAccounts(ctx context.Context, tenantID pgtype.UUID) (
 	return items, nil
 }
 
+const listGmailAccountsForPolling = `-- name: ListGmailAccountsForPolling :many
+SELECT id, tenant_id, user_id, email, access_token, refresh_token, token_expiry, daily_sent_count, daily_sent_reset_at, created_at, last_history_id, last_polled_at FROM gmail_accounts ORDER BY id
+`
+
+// ListGmailAccountsForPolling returns every connected Gmail account
+// across all tenants — the reply-detection poller (issue #4) walks
+// this set on each 2-minute tick. Ordering by id keeps the rotation
+// through accounts deterministic across ticks so a slow account
+// doesn't block the same neighbours each cycle.
+func (q *Queries) ListGmailAccountsForPolling(ctx context.Context) ([]GmailAccount, error) {
+	rows, err := q.db.Query(ctx, listGmailAccountsForPolling)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []GmailAccount{}
+	for rows.Next() {
+		var i GmailAccount
+		if err := rows.Scan(
+			&i.ID,
+			&i.TenantID,
+			&i.UserID,
+			&i.Email,
+			&i.AccessToken,
+			&i.RefreshToken,
+			&i.TokenExpiry,
+			&i.DailySentCount,
+			&i.DailySentResetAt,
+			&i.CreatedAt,
+			&i.LastHistoryID,
+			&i.LastPolledAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const resetDailySentCounts = `-- name: ResetDailySentCounts :exec
 UPDATE gmail_accounts SET daily_sent_count = 0, daily_sent_reset_at = NOW()
 WHERE daily_sent_reset_at < CURRENT_DATE
