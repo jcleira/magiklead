@@ -109,6 +109,16 @@ export default function OnboardingPage() {
           firstCampaignId = result.id;
         }
       }
+
+      // Persist a free-text ICP description synthesized from the
+      // chosen plays so the lead-search page can seed its description
+      // field on the user's first visit (issue #7).
+      const picked = plays.filter((p) => selectedPlays.has(p.id));
+      if (picked.length > 0 && typeof window !== "undefined") {
+        const desc = synthesizeICP(picked);
+        window.localStorage.setItem("magiklead.icp_description", desc);
+      }
+
       window.location.href = firstCampaignId
         ? `/campaigns/${firstCampaignId}`
         : "/campaigns";
@@ -116,6 +126,20 @@ export default function OnboardingPage() {
       setError((e as Error).message);
       setLoading(false);
     }
+  }
+
+  // synthesizeICP joins the chosen plays into a single sentence
+  // ("VP Sales / Head of Growth at SaaS, 50–500 — signal: hiring
+  // sales reps"). Kept local because it's pure formatting; no need
+  // to invent a shared helper file for two callers.
+  function synthesizeICP(picked: Play[]): string {
+    const parts = picked.map((p) => {
+      const titles = (p.titles || []).filter(Boolean).join(" / ");
+      const where = [p.industry, p.company_size].filter(Boolean).join(", ");
+      const signal = p.signal ? ` — signal: ${p.signal}` : "";
+      return `${titles} at ${where}${signal}`;
+    });
+    return parts.join(" | ");
   }
 
   return (
@@ -185,15 +209,54 @@ export default function OnboardingPage() {
             Review your business profile
           </h1>
           <p className="mt-2 text-slate-500">
-            Our AI generated this from your website. Edit anything that looks off.
+            Our AI generated this from your website. Edit anything that looks off
+            before we generate plays.
           </p>
           <div className="mt-8 space-y-5">
-            <Field label="Company Name" value={profile.company_name} />
-            <Field label="Description" value={profile.product_description} multiline />
-            <Field label="Features" value={profile.features.join(", ")} />
-            <Field label="Pricing" value={profile.pricing} />
-            <Field label="Target Customers" value={profile.target_customers.join(", ")} />
-            <Field label="Industry" value={profile.industry} />
+            <Field
+              label="Company Name"
+              value={profile.company_name}
+              onChange={(v) => setProfile({ ...profile, company_name: v })}
+            />
+            <Field
+              label="Description"
+              value={profile.product_description}
+              multiline
+              onChange={(v) => setProfile({ ...profile, product_description: v })}
+            />
+            <Field
+              label="Features"
+              value={profile.features.join(", ")}
+              onChange={(v) =>
+                setProfile({
+                  ...profile,
+                  features: v.split(",").map((s) => s.trim()).filter(Boolean),
+                })
+              }
+            />
+            <Field
+              label="Pricing"
+              value={profile.pricing}
+              onChange={(v) => setProfile({ ...profile, pricing: v })}
+            />
+            <Field
+              label="Target Customers"
+              value={profile.target_customers.join(", ")}
+              onChange={(v) =>
+                setProfile({
+                  ...profile,
+                  target_customers: v
+                    .split(",")
+                    .map((s) => s.trim())
+                    .filter(Boolean),
+                })
+              }
+            />
+            <Field
+              label="Industry"
+              value={profile.industry}
+              onChange={(v) => setProfile({ ...profile, industry: v })}
+            />
           </div>
           <div className="mt-8 flex gap-3">
             <button onClick={() => setStep(1)} className="rounded-lg border border-slate-300 px-6 py-3 text-sm font-semibold text-slate-700 hover:bg-slate-50">
@@ -290,7 +353,7 @@ export default function OnboardingPage() {
             <h3 className="font-semibold text-slate-900">Summary</h3>
             <ul className="mt-3 space-y-2 text-sm text-slate-600">
               <li>{selectedPlays.size} sales play{selectedPlays.size !== 1 ? "s" : ""} selected</li>
-              <li>Leads will be discovered via LinkedIn API</li>
+              <li>Leads will be discovered via People Data Labs</li>
               <li>AI will generate personalized email sequences</li>
               <li>Connect your Gmail to start sending</li>
             </ul>
@@ -317,20 +380,32 @@ function Field({
   label,
   value,
   multiline,
+  onChange,
 }: {
   label: string;
   value: string;
   multiline?: boolean;
+  onChange: (v: string) => void;
 }) {
-  const Tag = multiline ? "textarea" : "input";
+  const className =
+    "mt-1 w-full rounded-lg border border-slate-300 px-3 py-2 text-sm focus:border-slate-500 focus:outline-none focus:ring-1 focus:ring-slate-500";
   return (
     <div>
       <label className="text-sm font-medium text-slate-700">{label}</label>
-      <Tag
-        defaultValue={value}
-        rows={multiline ? 3 : undefined}
-        className="mt-1 w-full rounded-lg border border-slate-300 px-3 py-2 text-sm focus:border-slate-500 focus:outline-none focus:ring-1 focus:ring-slate-500"
-      />
+      {multiline ? (
+        <textarea
+          value={value}
+          onChange={(e) => onChange(e.target.value)}
+          rows={3}
+          className={className}
+        />
+      ) : (
+        <input
+          value={value}
+          onChange={(e) => onChange(e.target.value)}
+          className={className}
+        />
+      )}
     </div>
   );
 }

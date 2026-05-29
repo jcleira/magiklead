@@ -13,9 +13,12 @@ export interface LeadSearchResult {
   first_name?: string;
   last_name?: string;
   title?: string;
+  location?: string;
   organization_id: string;
   organization_name: string;
   domain?: string;
+  industries?: string[];
+  company_size?: string;
   email?: string;
   email_verified: boolean;
   email_is_catchall: boolean;
@@ -25,6 +28,7 @@ export interface LeadSearchResult {
 export interface LeadSearchResponse {
   results: LeadSearchResult[];
   count: number;
+  pdl_called?: boolean;
 }
 
 export interface LeadSearchRequest {
@@ -32,6 +36,10 @@ export interface LeadSearchRequest {
   with_email?: boolean;
   limit?: number;
   offset?: number;
+  industries?: string[];
+  company_size?: string;
+  locations?: string[];
+  description?: string;
 }
 
 export interface SavedLead {

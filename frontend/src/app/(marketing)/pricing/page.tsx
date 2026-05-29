@@ -28,9 +28,9 @@ const tiers = [
     sequences: "1,500 sequences/mo",
     campaigns: "3 campaigns",
     features: [
-      "Email + LinkedIn outreach",
-      "1 Gmail account",
+      "Email outreach from your Gmail",
       "AI-generated sequences",
+      "Reply + bounce detection",
       "Lead caching",
       "Campaign analytics",
     ],
@@ -46,9 +46,10 @@ const tiers = [
     campaigns: "10 campaigns",
     popular: true,
     features: [
-      "Email + LinkedIn outreach",
+      "Email outreach from your Gmail",
       "3 Gmail accounts",
       "AI personalization",
+      "Reply + bounce detection",
       "Lead caching",
       "Campaign analytics",
       "Priority lead discovery",
@@ -253,7 +254,7 @@ export default function PricingPage() {
             {[
               {
                 q: "What counts as a lead?",
-                a: "A lead is one person discovered through our LinkedIn search. Re-discovering the same person in a different campaign doesn't count again — leads are cached.",
+                a: "A lead is one person you save from our search results. Saving the same person across multiple campaigns or sequences only counts once — every saved lead is cached against your tenant.",
               },
               {
                 q: "Do unused leads roll over?",

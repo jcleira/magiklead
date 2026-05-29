@@ -3,21 +3,20 @@ import Link from "next/link";
 /* ─── Data ─── */
 
 const competitors = [
-  { name: "MagikLead", price: "$49", priceSub: "/mo", email: true, linkedin: true, leads: true, ai: "Full", accounts: "Your Gmail", highlight: true },
-  { name: "MoneyPrinter", price: "$250", priceSub: "/mo", email: true, linkedin: true, leads: true, ai: "Full", accounts: "$3/mo each", highlight: false },
-  { name: "Apollo", price: "$99", priceSub: "/user", email: true, linkedin: true, leads: true, ai: "Limited", accounts: "1 (Basic)", highlight: false },
-  { name: "Instantly", price: "$47", priceSub: "/mo", email: true, linkedin: false, leads: false, ai: "Full", accounts: "Unlimited", highlight: false },
-  { name: "Lemlist", price: "$109", priceSub: "/user", email: true, linkedin: true, leads: false, ai: "Full", accounts: "5 (Expert)", highlight: false },
+  { name: "MagikLead", price: "$49", priceSub: "/mo", email: true, leads: true, ai: "Full", accounts: "Your Gmail", highlight: true },
+  { name: "MoneyPrinter", price: "$250", priceSub: "/mo", email: true, leads: true, ai: "Full", accounts: "$3/mo each", highlight: false },
+  { name: "Apollo", price: "$99", priceSub: "/user", email: true, leads: true, ai: "Limited", accounts: "1 (Basic)", highlight: false },
+  { name: "Instantly", price: "$47", priceSub: "/mo", email: true, leads: false, ai: "Full", accounts: "Unlimited", highlight: false },
+  { name: "Lemlist", price: "$109", priceSub: "/user", email: true, leads: false, ai: "Full", accounts: "5 (Expert)", highlight: false },
 ];
 
 const featureRows = [
   { label: "Email outreach", key: "email" as const },
-  { label: "LinkedIn outreach", key: "linkedin" as const },
   { label: "Built-in lead discovery", key: "leads" as const },
 ];
 
 const faqs = [
-  { q: "How does lead discovery work?", a: "We search LinkedIn via API for people matching your ideal customer profile, find their email addresses, and verify them. All leads are cached — repeat searches cost nothing." },
+  { q: "How does lead discovery work?", a: "We search a 1B+ person B2B database (People Data Labs) for people matching your ideal customer profile, find their verified email addresses, and cache every lookup in our canonical graph — repeat searches across tenants cost nothing." },
   { q: "Do I need a separate email tool?", a: "No. You connect your Gmail account via OAuth, and we send emails directly from your inbox. Better deliverability, no extra cost." },
   { q: "Is my Gmail safe?", a: "Yes. We only request send and read permissions. We never store your email content. Daily send limits are enforced to protect your account." },
   { q: "How does billing work?", a: "Start free with 100 leads/month. Upgrade anytime. Plans are based on lead volume, not seats. Cancel anytime." },
@@ -141,7 +140,7 @@ export default function LandingPage() {
               {
                 num: "02",
                 title: "Discover leads",
-                desc: "We find decision-makers matching your ICP on LinkedIn, verify their emails, and cache everything.",
+                desc: "We pull decision-makers matching your ICP from a 1B+ person B2B database, verify their emails, and cache every lookup.",
                 icon: (
                   <svg className="h-6 w-6" fill="none" stroke="currentColor" strokeWidth={1.5} viewBox="0 0 24 24">
                     <path strokeLinecap="round" strokeLinejoin="round" d="M15 19.128a9.38 9.38 0 002.625.372 9.337 9.337 0 004.121-.952 4.125 4.125 0 00-7.533-2.493M15 19.128v-.003c0-1.113-.285-2.16-.786-3.07M15 19.128v.106A12.318 12.318 0 018.624 21c-2.331 0-4.512-.645-6.374-1.766l-.001-.109a6.375 6.375 0 0111.964-3.07M12 6.375a3.375 3.375 0 11-6.75 0 3.375 3.375 0 016.75 0zm8.25 2.25a2.625 2.625 0 11-5.25 0 2.625 2.625 0 015.25 0z" />
@@ -196,7 +195,7 @@ export default function LandingPage() {
             {[
               {
                 title: "All-in-one pipeline",
-                desc: "Leads, email sequences, and LinkedIn — in one tool. Stop duct-taping Apollo, Instantly, and Expandi together.",
+                desc: "Leads, email sequences, send, reply detection, suppression — in one tool. Stop duct-taping Apollo, Instantly, and a deliverability hack together.",
                 icon: (
                   <svg className="h-5 w-5" fill="none" stroke="currentColor" strokeWidth={1.5} viewBox="0 0 24 24">
                     <path strokeLinecap="round" strokeLinejoin="round" d="M3.75 13.5l10.5-11.25L12 10.5h8.25L9.75 21.75 12 13.5H3.75z" />
