@@ -82,6 +82,7 @@ SELECT
     o.primary_domain,
     o.industries,
     o.size_range,
+    p.has_email,
     COALESCE(
         (SELECT MAX(similarity(e.title, t))
          FROM unnest(COALESCE($1::text[], ARRAY[]::text[])) AS t),
@@ -99,10 +100,15 @@ WHERE
         FROM unnest($1::text[]) AS t
         WHERE e.title % t
     ))
-    AND (NOT $2::boolean OR EXISTS (
-        SELECT 1 FROM emails em
-        WHERE em.person_id = p.id AND em.verified_at IS NOT NULL
-    ))
+    -- with_email matches a persisted verified address OR the has_email
+    -- presence flag (PDL knows they're emailable; a paid plan reveals
+    -- the address). The latter lets the free tier surface coverage.
+    AND (NOT $2::boolean
+         OR p.has_email
+         OR EXISTS (
+            SELECT 1 FROM emails em
+            WHERE em.person_id = p.id AND em.verified_at IS NOT NULL
+        ))
     AND ($3::text[] IS NULL OR o.industries && $3::text[])
     AND ($4::text IS NULL OR o.size_range = $4::text)
     AND ($5::text[] IS NULL OR EXISTS (
@@ -141,6 +147,7 @@ type SearchPersonsRow struct {
 	PrimaryDomain       pgtype.Text `json:"primary_domain"`
 	Industries          []string    `json:"industries"`
 	SizeRange           pgtype.Text `json:"size_range"`
+	HasEmail            bool        `json:"has_email"`
 	TitleScore          float32     `json:"title_score"`
 }
 
@@ -194,6 +201,7 @@ func (q *Queries) SearchPersons(ctx context.Context, arg SearchPersonsParams) ([
 			&i.PrimaryDomain,
 			&i.Industries,
 			&i.SizeRange,
+			&i.HasEmail,
 			&i.TitleScore,
 		); err != nil {
 			return nil, err

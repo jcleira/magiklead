@@ -32,6 +32,7 @@ SELECT
     o.primary_domain,
     o.industries,
     o.size_range,
+    p.has_email,
     COALESCE(
         (SELECT MAX(similarity(e.title, t))
          FROM unnest(COALESCE(sqlc.narg('titles')::text[], ARRAY[]::text[])) AS t),
@@ -49,10 +50,15 @@ WHERE
         FROM unnest(sqlc.narg('titles')::text[]) AS t
         WHERE e.title % t
     ))
-    AND (NOT sqlc.arg('with_email')::boolean OR EXISTS (
-        SELECT 1 FROM emails em
-        WHERE em.person_id = p.id AND em.verified_at IS NOT NULL
-    ))
+    -- with_email matches a persisted verified address OR the has_email
+    -- presence flag (PDL knows they're emailable; a paid plan reveals
+    -- the address). The latter lets the free tier surface coverage.
+    AND (NOT sqlc.arg('with_email')::boolean
+         OR p.has_email
+         OR EXISTS (
+            SELECT 1 FROM emails em
+            WHERE em.person_id = p.id AND em.verified_at IS NOT NULL
+        ))
     AND (sqlc.narg('industries')::text[] IS NULL OR o.industries && sqlc.narg('industries')::text[])
     AND (sqlc.narg('company_size')::text IS NULL OR o.size_range = sqlc.narg('company_size')::text)
     AND (sqlc.narg('locations')::text[] IS NULL OR EXISTS (

@@ -62,13 +62,22 @@ type leadSearchResult struct {
 	Email            *string  `json:"email,omitempty"`
 	EmailVerified    bool     `json:"email_verified"`
 	EmailIsCatchall  bool     `json:"email_is_catchall"`
-	TitleScore       *float32 `json:"title_score,omitempty"`
+	// HasEmail is true when the prospect is emailable even if the
+	// address isn't visible yet (PDL free tier gates the value behind a
+	// boolean). Email != nil implies HasEmail; the reverse holds only
+	// once a paid plan reveals the address.
+	HasEmail   bool     `json:"has_email"`
+	TitleScore *float32 `json:"title_score,omitempty"`
 }
 
 type leadSearchResponse struct {
-	Results   []leadSearchResult `json:"results"`
-	Count     int                `json:"count"`
-	PDLCalled bool               `json:"pdl_called"`
+	Results []leadSearchResult `json:"results"`
+	Count   int                `json:"count"`
+	// EmailableCount is how many of Results are emailable (HasEmail).
+	// On the free tier this is the coverage signal — how many of the
+	// ICP would yield an address on a paid plan — without exposing any.
+	EmailableCount int  `json:"emailable_count"`
+	PDLCalled      bool `json:"pdl_called"`
 }
 
 // Search handles POST /api/v1/leads/search.
@@ -139,14 +148,19 @@ func (h *LeadSearchHandler) Search(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	results := make([]leadSearchResult, len(rows))
+	emailable := 0
 	for i, row := range rows {
 		results[i] = toSearchResult(row, emailByPerson[row.PersonID.Bytes])
+		if results[i].HasEmail {
+			emailable++
+		}
 	}
 
 	apierr.WriteJSON(w, http.StatusOK, leadSearchResponse{
-		Results:   results,
-		Count:     len(results),
-		PDLCalled: pdlCalled,
+		Results:        results,
+		Count:          len(results),
+		EmailableCount: emailable,
+		PDLCalled:      pdlCalled,
 	})
 }
 
@@ -262,10 +276,12 @@ func toSearchResult(p repository.SearchPersonsRow, em repository.ListBestEmailsF
 		v := p.TitleScore
 		r.TitleScore = &v
 	}
+	r.HasEmail = p.HasEmail
 	if em.Email != "" {
 		r.Email = &em.Email
 		r.EmailVerified = em.VerifiedAt.Valid
 		r.EmailIsCatchall = em.IsCatchall.Valid && em.IsCatchall.Bool
+		r.HasEmail = true
 	}
 	return r
 }

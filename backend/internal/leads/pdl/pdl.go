@@ -119,6 +119,9 @@ type Person struct {
 	SizeRange        string
 	Email            string
 	EmailVerified    bool
+	// HasEmail is true when PDL knows the person is emailable, even if
+	// the address itself is gated behind a paid plan (free-tier signal).
+	HasEmail bool
 }
 
 // Email is a verified email returned by Enrich.
@@ -236,12 +239,13 @@ func (m *Module) Enrich(ctx context.Context, personID uuid.UUID) (Email, error) 
 	if err := json.Unmarshal(raw, &er); err != nil {
 		return Email{}, fmt.Errorf("%w: %v", ErrMalformed, err)
 	}
-	if er.Data.WorkEmail == "" {
+	email := pickEmail(er.Data)
+	if email == "" {
 		return Email{}, nil
 	}
 
 	row, err := m.q.UpsertEmailVerifiedFromPDL(ctx, repository.UpsertEmailVerifiedFromPDLParams{
-		Lower:    er.Data.WorkEmail,
+		Lower:    email,
 		PersonID: pgUUID(personID),
 	})
 	if err != nil {
@@ -304,6 +308,7 @@ func (m *Module) writeThrough(ctx context.Context, rec pdlPerson) (Person, error
 	if org.SizeRange.Valid {
 		out.SizeRange = org.SizeRange.String
 	}
+	out.HasEmail = person.HasEmail
 
 	if email := pickEmail(rec); email != "" {
 		row, err := m.q.UpsertEmailVerifiedFromPDL(ctx, repository.UpsertEmailVerifiedFromPDLParams{
@@ -355,6 +360,7 @@ func (m *Module) upsertOrganization(ctx context.Context, rec pdlPerson) (reposit
 // upsertPerson returns the canonical row and whether it was newly
 // inserted (the caller writes the pdl_id identifier only on inserts).
 func (m *Module) upsertPerson(ctx context.Context, rec pdlPerson) (repository.Person, bool, error) {
+	emailable := hasEmail(rec)
 	existing, err := m.q.FindPersonByPDLID(ctx, rec.ID)
 	if err == nil {
 		updated, err := m.q.UpdatePersonFromPDL(ctx, repository.UpdatePersonFromPDLParams{
@@ -363,7 +369,8 @@ func (m *Module) upsertPerson(ctx context.Context, rec pdlPerson) (repository.Pe
 			FirstName:      pgText(rec.FirstName),
 			LastName:       pgText(rec.LastName),
 			NormalizedName: normalize(rec.FullName),
-			Location:       pgText(rec.LocationName),
+			Location:       pgText(rec.LocationName.Value),
+			HasEmail:       emailable,
 		})
 		return updated, false, err
 	}
@@ -376,7 +383,8 @@ func (m *Module) upsertPerson(ctx context.Context, rec pdlPerson) (repository.Pe
 		FirstName:      pgText(rec.FirstName),
 		LastName:       pgText(rec.LastName),
 		NormalizedName: normalize(rec.FullName),
-		Location:       pgText(rec.LocationName),
+		Location:       pgText(rec.LocationName.Value),
+		HasEmail:       emailable,
 	})
 	return created, true, err
 }
@@ -466,6 +474,7 @@ func (m *Module) lookupCanonical(ctx context.Context, f Filters, requireFresh bo
 		if r.SizeRange.Valid {
 			p.SizeRange = r.SizeRange.String
 		}
+		p.HasEmail = r.HasEmail
 		if e, ok := emailByPerson[r.PersonID.Bytes]; ok {
 			p.Email = e
 			p.EmailVerified = true
@@ -575,18 +584,90 @@ type enrichResponse struct {
 }
 
 type pdlPerson struct {
-	ID                  string    `json:"id"`
-	FullName            string    `json:"full_name"`
-	FirstName           string    `json:"first_name"`
-	LastName            string    `json:"last_name"`
-	JobTitle            string    `json:"job_title"`
-	JobCompanyName      string    `json:"job_company_name"`
-	JobCompanyWebsite   string    `json:"job_company_website"`
-	JobCompanyIndustry  string    `json:"job_company_industry"`
-	JobCompanySize      string    `json:"job_company_size"`
-	LocationName        string    `json:"location_name"`
-	WorkEmail           string    `json:"work_email"`
-	Emails              []pdlMail `json:"emails"`
+	ID                 string       `json:"id"`
+	FullName           string       `json:"full_name"`
+	FirstName          string       `json:"first_name"`
+	LastName           string       `json:"last_name"`
+	JobTitle           string       `json:"job_title"`
+	JobCompanyName     string       `json:"job_company_name"`
+	JobCompanyWebsite  string       `json:"job_company_website"`
+	JobCompanyIndustry string       `json:"job_company_industry"`
+	JobCompanySize     string       `json:"job_company_size"`
+	LocationName       pdlOptString `json:"location_name"`
+	WorkEmail          pdlOptString `json:"work_email"`
+	Emails             pdlMails     `json:"emails"`
+}
+
+// pdlOptString decodes a PDL field that is normally a string but, on
+// plans without contact-data access, comes back as a boolean presence
+// flag instead (true = "a value exists here you can't see", false =
+// none). It captures the address when present and the presence bit
+// either way, so a redacted field degrades to "no address, known
+// emailable" rather than 502-ing the whole search.
+type pdlOptString struct {
+	Value   string
+	Present bool
+}
+
+func (s *pdlOptString) UnmarshalJSON(b []byte) error {
+	b = bytes.TrimSpace(b)
+	if len(b) == 0 || string(b) == "null" {
+		*s = pdlOptString{}
+		return nil
+	}
+	switch b[0] {
+	case '"':
+		var v string
+		if err := json.Unmarshal(b, &v); err != nil {
+			return err
+		}
+		v = strings.TrimSpace(v)
+		*s = pdlOptString{Value: v, Present: v != ""}
+		return nil
+	case 't', 'f':
+		var present bool
+		if err := json.Unmarshal(b, &present); err != nil {
+			return err
+		}
+		*s = pdlOptString{Present: present}
+		return nil
+	default:
+		return fmt.Errorf("pdl: string-or-bool field: unexpected JSON %s", b)
+	}
+}
+
+// pdlMails decodes PDL's emails field, normally an array of
+// {address,type} but returned as a boolean presence flag on plans
+// without contact access (same obfuscation as pdlOptString).
+type pdlMails struct {
+	Mails   []pdlMail
+	Present bool
+}
+
+func (e *pdlMails) UnmarshalJSON(b []byte) error {
+	b = bytes.TrimSpace(b)
+	if len(b) == 0 || string(b) == "null" {
+		*e = pdlMails{}
+		return nil
+	}
+	switch b[0] {
+	case '[':
+		var ms []pdlMail
+		if err := json.Unmarshal(b, &ms); err != nil {
+			return err
+		}
+		*e = pdlMails{Mails: ms, Present: len(ms) > 0}
+		return nil
+	case 't', 'f':
+		var present bool
+		if err := json.Unmarshal(b, &present); err != nil {
+			return err
+		}
+		*e = pdlMails{Present: present}
+		return nil
+	default:
+		return fmt.Errorf("pdl: emails: unexpected JSON %s", b)
+	}
 }
 
 type pdlMail struct {
@@ -640,15 +721,24 @@ func searchSize(n int) int {
 }
 
 func pickEmail(rec pdlPerson) string {
-	if e := strings.TrimSpace(rec.WorkEmail); e != "" {
+	if e := strings.TrimSpace(rec.WorkEmail.Value); e != "" {
 		return strings.ToLower(e)
 	}
-	for _, m := range rec.Emails {
+	for _, m := range rec.Emails.Mails {
 		if e := strings.TrimSpace(m.Address); e != "" {
 			return strings.ToLower(e)
 		}
 	}
 	return ""
+}
+
+// hasEmail reports whether PDL knows of an email for this person —
+// true when a real address is present, or when a contact field came
+// back as a gated presence flag (a paid plan would reveal the address).
+// This is the signal persisted to persons.has_email so the canonical
+// search can surface emailable prospects even on the free tier.
+func hasEmail(rec pdlPerson) bool {
+	return rec.WorkEmail.Present || rec.Emails.Present
 }
 
 func industriesArg(industry string) []string {

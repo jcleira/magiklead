@@ -185,7 +185,7 @@ func (q *Queries) CreateOrganizationIdentifier(ctx context.Context, arg CreateOr
 const createPerson = `-- name: CreatePerson :one
 INSERT INTO persons (canonical_name, first_name, last_name, normalized_name)
 VALUES ($1, $2, $3, $4)
-RETURNING id, canonical_name, first_name, last_name, created_at, updated_at, normalized_name, location
+RETURNING id, canonical_name, first_name, last_name, created_at, updated_at, normalized_name, location, has_email
 `
 
 type CreatePersonParams struct {
@@ -212,6 +212,7 @@ func (q *Queries) CreatePerson(ctx context.Context, arg CreatePersonParams) (Per
 		&i.UpdatedAt,
 		&i.NormalizedName,
 		&i.Location,
+		&i.HasEmail,
 	)
 	return i, err
 }
@@ -408,7 +409,7 @@ func (q *Queries) FindOrganizationByIdentifier(ctx context.Context, arg FindOrga
 }
 
 const findPersonByIdentifier = `-- name: FindPersonByIdentifier :one
-SELECT p.id, p.canonical_name, p.first_name, p.last_name, p.created_at, p.updated_at, p.normalized_name, p.location
+SELECT p.id, p.canonical_name, p.first_name, p.last_name, p.created_at, p.updated_at, p.normalized_name, p.location, p.has_email
 FROM persons p
 JOIN person_identifiers pi ON pi.person_id = p.id
 WHERE pi.identifier_type = $1 AND pi.identifier_value = $2
@@ -432,6 +433,7 @@ func (q *Queries) FindPersonByIdentifier(ctx context.Context, arg FindPersonById
 		&i.UpdatedAt,
 		&i.NormalizedName,
 		&i.Location,
+		&i.HasEmail,
 	)
 	return i, err
 }

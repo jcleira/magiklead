@@ -224,6 +224,7 @@ type Person struct {
 	UpdatedAt      pgtype.Timestamptz `json:"updated_at"`
 	NormalizedName string             `json:"normalized_name"`
 	Location       pgtype.Text        `json:"location"`
+	HasEmail       bool               `json:"has_email"`
 }
 
 type PersonAlias struct {

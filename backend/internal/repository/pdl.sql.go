@@ -45,9 +45,9 @@ func (q *Queries) CreateOrganizationFromPDL(ctx context.Context, arg CreateOrgan
 }
 
 const createPersonFromPDL = `-- name: CreatePersonFromPDL :one
-INSERT INTO persons (canonical_name, first_name, last_name, normalized_name, location, updated_at)
-VALUES ($1, $2, $3, $4, $5, NOW())
-RETURNING id, canonical_name, first_name, last_name, created_at, updated_at, normalized_name, location
+INSERT INTO persons (canonical_name, first_name, last_name, normalized_name, location, has_email, updated_at)
+VALUES ($1, $2, $3, $4, $5, $6, NOW())
+RETURNING id, canonical_name, first_name, last_name, created_at, updated_at, normalized_name, location, has_email
 `
 
 type CreatePersonFromPDLParams struct {
@@ -56,6 +56,7 @@ type CreatePersonFromPDLParams struct {
 	LastName       pgtype.Text `json:"last_name"`
 	NormalizedName string      `json:"normalized_name"`
 	Location       pgtype.Text `json:"location"`
+	HasEmail       bool        `json:"has_email"`
 }
 
 func (q *Queries) CreatePersonFromPDL(ctx context.Context, arg CreatePersonFromPDLParams) (Person, error) {
@@ -65,6 +66,7 @@ func (q *Queries) CreatePersonFromPDL(ctx context.Context, arg CreatePersonFromP
 		arg.LastName,
 		arg.NormalizedName,
 		arg.Location,
+		arg.HasEmail,
 	)
 	var i Person
 	err := row.Scan(
@@ -76,6 +78,7 @@ func (q *Queries) CreatePersonFromPDL(ctx context.Context, arg CreatePersonFromP
 		&i.UpdatedAt,
 		&i.NormalizedName,
 		&i.Location,
+		&i.HasEmail,
 	)
 	return i, err
 }
@@ -143,7 +146,7 @@ func (q *Queries) FindOrganizationByPrimaryDomain(ctx context.Context, primaryDo
 }
 
 const findPersonByPDLID = `-- name: FindPersonByPDLID :one
-SELECT p.id, p.canonical_name, p.first_name, p.last_name, p.created_at, p.updated_at, p.normalized_name, p.location FROM persons p
+SELECT p.id, p.canonical_name, p.first_name, p.last_name, p.created_at, p.updated_at, p.normalized_name, p.location, p.has_email FROM persons p
 JOIN person_identifiers pi ON pi.person_id = p.id
 WHERE pi.identifier_type = 'pdl_id' AND pi.identifier_value = $1
 LIMIT 1
@@ -163,6 +166,7 @@ func (q *Queries) FindPersonByPDLID(ctx context.Context, identifierValue string)
 		&i.UpdatedAt,
 		&i.NormalizedName,
 		&i.Location,
+		&i.HasEmail,
 	)
 	return i, err
 }
@@ -225,9 +229,10 @@ SET canonical_name = $2,
     last_name       = COALESCE($4, last_name),
     normalized_name = $5,
     location        = COALESCE($6, location),
+    has_email       = persons.has_email OR $7,
     updated_at      = NOW()
 WHERE id = $1
-RETURNING id, canonical_name, first_name, last_name, created_at, updated_at, normalized_name, location
+RETURNING id, canonical_name, first_name, last_name, created_at, updated_at, normalized_name, location, has_email
 `
 
 type UpdatePersonFromPDLParams struct {
@@ -237,8 +242,12 @@ type UpdatePersonFromPDLParams struct {
 	LastName       pgtype.Text `json:"last_name"`
 	NormalizedName string      `json:"normalized_name"`
 	Location       pgtype.Text `json:"location"`
+	HasEmail       bool        `json:"has_email"`
 }
 
+// has_email is sticky: once a person is known emailable we never flip
+// it back (a later write that happens to lack the field shouldn't lose
+// the signal), so OR the existing value with the incoming one.
 func (q *Queries) UpdatePersonFromPDL(ctx context.Context, arg UpdatePersonFromPDLParams) (Person, error) {
 	row := q.db.QueryRow(ctx, updatePersonFromPDL,
 		arg.ID,
@@ -247,6 +256,7 @@ func (q *Queries) UpdatePersonFromPDL(ctx context.Context, arg UpdatePersonFromP
 		arg.LastName,
 		arg.NormalizedName,
 		arg.Location,
+		arg.HasEmail,
 	)
 	var i Person
 	err := row.Scan(
@@ -258,6 +268,7 @@ func (q *Queries) UpdatePersonFromPDL(ctx context.Context, arg UpdatePersonFromP
 		&i.UpdatedAt,
 		&i.NormalizedName,
 		&i.Location,
+		&i.HasEmail,
 	)
 	return i, err
 }

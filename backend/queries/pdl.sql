@@ -36,17 +36,21 @@ WHERE pi.identifier_type = 'pdl_id' AND pi.identifier_value = $1
 LIMIT 1;
 
 -- name: CreatePersonFromPDL :one
-INSERT INTO persons (canonical_name, first_name, last_name, normalized_name, location, updated_at)
-VALUES ($1, $2, $3, $4, $5, NOW())
+INSERT INTO persons (canonical_name, first_name, last_name, normalized_name, location, has_email, updated_at)
+VALUES ($1, $2, $3, $4, $5, $6, NOW())
 RETURNING *;
 
 -- name: UpdatePersonFromPDL :one
+-- has_email is sticky: once a person is known emailable we never flip
+-- it back (a later write that happens to lack the field shouldn't lose
+-- the signal), so OR the existing value with the incoming one.
 UPDATE persons
 SET canonical_name = $2,
     first_name      = COALESCE($3, first_name),
     last_name       = COALESCE($4, last_name),
     normalized_name = $5,
     location        = COALESCE($6, location),
+    has_email       = persons.has_email OR $7,
     updated_at      = NOW()
 WHERE id = $1
 RETURNING *;
