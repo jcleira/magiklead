@@ -118,7 +118,22 @@ func (h *LeadSearchHandler) Search(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if len(rows) == 0 && usesPDLFilters && h.pdl != nil && h.pdl.Configured() {
+	emailByPerson, err := h.attachEmails(r.Context(), rows)
+	if err != nil {
+		apierr.WriteError(w, apierr.APIError{Status: 500, Code: "search_failed", Message: err.Error()})
+		return
+	}
+
+	// Shadow guard: a with_email search can be satisfied by the
+	// has_email presence flag alone — PDL free-tier-cached rows that are
+	// "known emailable" but carry no actual address. Those would
+	// otherwise shadow the (paid) PDL fetch within the 90-day freshness
+	// window. So if emails were requested and not one returned row
+	// carries a real address, treat it as a cache miss and let PDL try
+	// to resolve the actual addresses.
+	noAddresses := req.WithEmail && len(rows) > 0 && len(emailByPerson) == 0
+
+	if (len(rows) == 0 || noAddresses) && usesPDLFilters && h.pdl != nil && h.pdl.Configured() {
 		if _, err := h.pdl.Search(r.Context(), pdl.Filters{
 			Titles:      titles,
 			Industries:  industries,
@@ -140,13 +155,13 @@ func (h *LeadSearchHandler) Search(w http.ResponseWriter, r *http.Request) {
 			apierr.WriteError(w, apierr.APIError{Status: 500, Code: "search_failed", Message: err.Error()})
 			return
 		}
+		emailByPerson, err = h.attachEmails(r.Context(), rows)
+		if err != nil {
+			apierr.WriteError(w, apierr.APIError{Status: 500, Code: "search_failed", Message: err.Error()})
+			return
+		}
 	}
 
-	emailByPerson, err := h.attachEmails(r.Context(), rows)
-	if err != nil {
-		apierr.WriteError(w, apierr.APIError{Status: 500, Code: "search_failed", Message: err.Error()})
-		return
-	}
 	results := make([]leadSearchResult, len(rows))
 	emailable := 0
 	for i, row := range rows {

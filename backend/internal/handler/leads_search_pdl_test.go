@@ -233,6 +233,109 @@ func TestLeadSearch_NoPDLConfigured(t *testing.T) {
 	}
 }
 
+// TestLeadSearch_PDLFallback_OnShadowedEmailless covers the has_email
+// cache-shadow guard. A canonical person that matches the ICP and is
+// flagged has_email=TRUE but has NO actual address (exactly what a
+// prior free-tier PDL write-through leaves behind) must NOT shadow the
+// PDL fetch when the caller asked for emails — PDL is still called and
+// the real address resolved. Without the guard, the fresh emailless row
+// satisfies with_email and PDL is skipped (pdl_called=false).
+func TestLeadSearch_PDLFallback_OnShadowedEmailless(t *testing.T) {
+	pool := withPool(t)
+	tenantID := freshTenant(t, pool)
+	suffix := "-" + uuid.NewString()[:8]
+	ctx := context.Background()
+
+	industry := "shadow-industry" + suffix
+	title := "Growth Lead " + suffix
+	domain := "shadowco" + strings.TrimPrefix(suffix, "-") + ".test"
+
+	// Seed an "emailable but address-less" canonical match.
+	orgID := uuid.New()
+	if _, err := pool.Exec(ctx,
+		`INSERT INTO organizations (id, canonical_name, primary_domain, industries, size_range)
+		 VALUES ($1,$2,$3,$4,$5)`,
+		orgID, "Shadow Co"+suffix, domain, []string{industry}, "51-200"); err != nil {
+		t.Fatalf("seed org: %v", err)
+	}
+	personID := uuid.New()
+	if _, err := pool.Exec(ctx,
+		`INSERT INTO persons (id, canonical_name, normalized_name, has_email, updated_at)
+		 VALUES ($1,$2,$3,TRUE,NOW())`,
+		personID, "Sammy Shadow"+suffix, "sammy shadow"+suffix); err != nil {
+		t.Fatalf("seed person: %v", err)
+	}
+	if _, err := pool.Exec(ctx,
+		`INSERT INTO employments (person_id, organization_id, title, is_current)
+		 VALUES ($1,$2,$3,TRUE)`,
+		personID, orgID, title); err != nil {
+		t.Fatalf("seed employment: %v", err)
+	}
+
+	// PDL stub returns a matching record WITH a real work_email.
+	body := mustJSON(t, map[string]any{
+		"status": 200,
+		"data": []map[string]any{{
+			"id":                   "pdl-shadow" + suffix,
+			"full_name":            "Sammy Shadow" + suffix,
+			"job_title":            title,
+			"job_company_name":     "Shadow Co" + suffix,
+			"job_company_website":  domain,
+			"job_company_industry": industry,
+			"job_company_size":     "51-200",
+			"work_email":           "sammy" + suffix + "@shadowco.test",
+		}},
+	})
+	stub := newStub(t, 200, body)
+	pdlModule := pdl.New(pool, "dev", stub.Client())
+	pdlModule.SetBaseURL(stub.URL)
+	h := handler.NewLeadSearchHandler(repository.New(pool), pdlModule)
+
+	reqBody := mustJSON(t, map[string]any{
+		"industries":   []string{industry},
+		"company_size": "51-200",
+		"with_email":   true,
+		"limit":        25,
+	})
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/leads/search", bytes.NewReader(reqBody))
+	req.Header.Set("Content-Type", "application/json")
+	req = req.WithContext(context.WithValue(req.Context(), middleware.TenantIDKey, tenantID))
+	rr := httptest.NewRecorder()
+
+	h.Search(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rr.Code, rr.Body.String())
+	}
+	// The guard must fire: an emailless has_email row must not shadow
+	// the PDL fetch.
+	if stub.calls != 1 {
+		t.Errorf("PDL hits=%d, want 1 (emailless has_email row must not shadow the fetch)", stub.calls)
+	}
+	var resp struct {
+		Results []struct {
+			Email    string `json:"email"`
+			HasEmail bool   `json:"has_email"`
+		} `json:"results"`
+		PDLCalled bool `json:"pdl_called"`
+	}
+	if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("unmarshal: %v body=%s", err, rr.Body.String())
+	}
+	if !resp.PDLCalled {
+		t.Error("pdl_called=false; the shadow guard should have triggered a PDL fetch")
+	}
+	found := false
+	for _, r := range resp.Results {
+		if r.Email == "sammy"+suffix+"@shadowco.test" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("real address not resolved after PDL fallthrough; results=%+v", resp.Results)
+	}
+}
+
 func mustJSON(t *testing.T, v any) []byte {
 	t.Helper()
 	buf, err := json.Marshal(v)
