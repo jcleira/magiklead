@@ -74,16 +74,19 @@ WITH org_input(canonical_name, primary_domain) AS (
 )
 INSERT INTO emails (email, person_id, verification_method, verified_at, is_catchall, bounce_count)
 SELECT
-    pi.email_local || '@' || o2.primary_domain,
+    pi.email_local || '@' || o.primary_domain,
     p.id,
     'fixture',
     NOW(),
     FALSE,
     0
+-- primary_domain comes from the org_input VALUES CTE, NOT the
+-- organizations table: those orgs were inserted by a data-modifying
+-- CTE in this same statement, so a read of the table here sees the
+-- pre-statement snapshot (no rows) and the join would yield nothing.
 FROM person_input pi
 JOIN people p ON p.canonical_name = pi.canonical_name
-JOIN org_input o ON o.canonical_name = pi.org_canonical
-JOIN organizations o2 ON o2.canonical_name = o.canonical_name;
+JOIN org_input o ON o.canonical_name = pi.org_canonical;
 
 COMMIT;
 `
@@ -102,8 +105,23 @@ func main() {
 	}
 	defer pool.Close()
 
-	if _, err := pool.Exec(context.Background(), seedSQL); err != nil {
+	ctx := context.Background()
+	if _, err := pool.Exec(ctx, seedSQL); err != nil {
 		log.Fatal("seed exec: ", err)
 	}
-	log.Println("seed: 5 orgs + 20 persons inserted")
+
+	// Report ACTUAL counts — a hardcoded message previously masked a bug
+	// where 0 emails were inserted yet the seed still claimed success.
+	var orgs, persons, emails int
+	if err := pool.QueryRow(ctx, `SELECT
+		(SELECT count(*) FROM organizations WHERE canonical_name LIKE '%(devpod-fixture)'),
+		(SELECT count(*) FROM persons       WHERE canonical_name LIKE '%(devpod-fixture)'),
+		(SELECT count(*) FROM emails         WHERE verification_method = 'fixture')`,
+	).Scan(&orgs, &persons, &emails); err != nil {
+		log.Fatal("seed count: ", err)
+	}
+	if emails == 0 {
+		log.Fatalf("seed: %d orgs + %d persons but 0 emails — fixture is broken", orgs, persons)
+	}
+	log.Printf("seed: %d orgs + %d persons + %d emails inserted", orgs, persons, emails)
 }
