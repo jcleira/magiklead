@@ -158,6 +158,9 @@ jobs:
         working-directory: backend
         run: go run ./cmd/seed
 
+      - name: DB probe — verified-email persons right after seed
+        run: psql "$DATABASE_URL" -tAc "SELECT 'after-seed=' || COUNT(*) FROM persons p JOIN emails e ON e.person_id=p.id WHERE e.verified_at IS NOT NULL;"
+
       - uses: pnpm/action-setup@v4
         with:
           version: 11
@@ -213,6 +216,9 @@ jobs:
           ${E2E_REAL_STRIPE:+E2E_REAL_STRIPE=$E2E_REAL_STRIPE}
           ${E2E_REAL_PDL:+E2E_REAL_PDL=$E2E_REAL_PDL}
           EOF
+
+      - name: DB probe — verified-email persons right before the suite
+        run: psql "$DATABASE_URL" -tAc "SELECT 'before-suite=' || COUNT(*) FROM persons p JOIN emails e ON e.person_id=p.id WHERE e.verified_at IS NOT NULL;"
 
       - name: Run e2e suite (CI fails on any flow failure)
         working-directory: tests/e2e

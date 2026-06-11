@@ -6,8 +6,9 @@
 import { test, expect } from '@playwright/test';
 import { createHmac } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
+import { newClient, cleanupTenant } from '../helpers/api.js';
 import { exec, queryScalar } from '../helpers/db.js';
-import { captureArtefact } from '../helpers/artefact.js';
+import { captureArtefact, resolveTenantID } from '../helpers/artefact.js';
 
 function readDevpodSecret(key: string): string {
   // In CI the secret is in the environment (api + worker share the
@@ -40,43 +41,52 @@ function mintUnsubToken(email: string, tenantId: string, secret: string): string
 const API_BASE = process.env.E2E_API_URL ?? 'http://api-mvp.magiklead.localhost';
 
 test('flow 12: public unsubscribe (mint → POST → suppression row)', async ({}, testInfo) => {
-  const secret = readDevpodSecret('UNSUBSCRIBE_SIGNING_SECRET');
-  const tenantId = queryScalar(`SELECT id FROM tenants LIMIT 1;`); // any tenant works
-  const email = `e2e-flow12-${Date.now()}@example.test`;
-  const token = mintUnsubToken(email, tenantId, secret);
+  // Bootstrap our own tenant so the test owns a valid tenant_id rather
+  // than borrowing whatever happens to be in the DB — on a clean CI
+  // database every spec cleans up after itself, so none is left.
+  const client = await newClient('flow12');
+  try {
+    await client.get('/api/v1/settings');
+    const secret = readDevpodSecret('UNSUBSCRIBE_SIGNING_SECRET');
+    const tenantId = resolveTenantID(client.identity.userId);
+    const email = `e2e-flow12-${Date.now()}@example.test`;
+    const token = mintUnsubToken(email, tenantId, secret);
 
-  // 12a: POST with valid token → 200 HTML confirmation.
-  const okRes = await fetch(`${API_BASE}/api/v1/public/unsubscribe?token=${token}`, {
-    method: 'POST',
-  });
-  expect(okRes.status).toBe(200);
-  expect(await okRes.text()).toContain(email);
+    // 12a: POST with valid token → 200 HTML confirmation.
+    const okRes = await fetch(`${API_BASE}/api/v1/public/unsubscribe?token=${token}`, {
+      method: 'POST',
+    });
+    expect(okRes.status).toBe(200);
+    expect(await okRes.text()).toContain(email);
 
-  // 12b: suppression row inserted with reason=list-unsub.
-  const reason = queryScalar(`SELECT reason FROM unsubscribes WHERE email='${email}';`);
-  expect(reason).toBe('list-unsub');
+    // 12b: suppression row inserted with reason=list-unsub.
+    const reason = queryScalar(`SELECT reason FROM unsubscribes WHERE email='${email}';`);
+    expect(reason).toBe('list-unsub');
 
-  // 12c: replay → idempotent (ON CONFLICT).
-  const replayRes = await fetch(`${API_BASE}/api/v1/public/unsubscribe?token=${token}`, {
-    method: 'POST',
-  });
-  expect(replayRes.status).toBe(200);
-  const count = queryScalar(`SELECT COUNT(*) FROM unsubscribes WHERE email='${email}';`);
-  expect(count).toBe('1');
+    // 12c: replay → idempotent (ON CONFLICT).
+    const replayRes = await fetch(`${API_BASE}/api/v1/public/unsubscribe?token=${token}`, {
+      method: 'POST',
+    });
+    expect(replayRes.status).toBe(200);
+    const count = queryScalar(`SELECT COUNT(*) FROM unsubscribes WHERE email='${email}';`);
+    expect(count).toBe('1');
 
-  // 12d: tampered signature → 401.
-  const tampered = `${token.slice(0, token.lastIndexOf('.'))}.invalidSig`;
-  const tamperedRes = await fetch(`${API_BASE}/api/v1/public/unsubscribe?token=${tampered}`, {
-    method: 'POST',
-  });
-  expect(tamperedRes.status).toBe(401);
+    // 12d: tampered signature → 401.
+    const tampered = `${token.slice(0, token.lastIndexOf('.'))}.invalidSig`;
+    const tamperedRes = await fetch(`${API_BASE}/api/v1/public/unsubscribe?token=${tampered}`, {
+      method: 'POST',
+    });
+    expect(tamperedRes.status).toBe(401);
 
-  // 12e: missing token → 401.
-  const missingRes = await fetch(`${API_BASE}/api/v1/public/unsubscribe`, { method: 'POST' });
-  expect(missingRes.status).toBe(401);
+    // 12e: missing token → 401.
+    const missingRes = await fetch(`${API_BASE}/api/v1/public/unsubscribe`, { method: 'POST' });
+    expect(missingRes.status).toBe(401);
 
-  // Cleanup test row.
-  exec(`DELETE FROM unsubscribes WHERE email='${email}';`);
+    // Cleanup test row.
+    exec(`DELETE FROM unsubscribes WHERE email='${email}';`);
 
-  await captureArtefact(testInfo, { tenantId: null });
+    await captureArtefact(testInfo, { tenantId: null });
+  } finally {
+    await cleanupTenant(client);
+  }
 });
