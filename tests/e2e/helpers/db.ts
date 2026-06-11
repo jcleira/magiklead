@@ -1,16 +1,25 @@
-// Thin wrapper around `devpods exec postgres psql` so tests can
-// inspect or mutate DB state without an exposed host port. Stays
-// host-portable: as long as `devpods` is on PATH, queries land in
-// the right Postgres regardless of which devpod the caller is on.
+// DB access for e2e assertions. Dual-mode: when DATABASE_URL is set
+// (CI / direct), queries go straight to Postgres via psql; otherwise
+// they route through the devpod's postgres container (local dev, where
+// Postgres has no exposed host port). The exported helpers stay
+// synchronous so specs read top-to-bottom without await.
 import { execFileSync } from 'node:child_process';
 
 export interface PSQLOptions {
-  // Override the implicit devpod name; defaults to whatever
-  // `devpods exec` picks from the cwd/branch.
+  // Override the implicit devpod name (local mode only); ignored when
+  // DATABASE_URL is set.
   devpod?: string;
 }
 
 function runPsql(sql: string, opts: PSQLOptions = {}): string {
+  const url = process.env.DATABASE_URL;
+  if (url) {
+    const out = execFileSync('psql', [url, '-tAc', sql], {
+      encoding: 'utf8',
+      maxBuffer: 32 * 1024 * 1024,
+    });
+    return out.trim();
+  }
   const args = ['exec'];
   if (opts.devpod) args.push('--name', opts.devpod);
   args.push('postgres', 'psql', '-U', 'devpod', '-d', 'devpod', '-tAc', sql);

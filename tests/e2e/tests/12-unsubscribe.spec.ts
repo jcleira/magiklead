@@ -10,8 +10,10 @@ import { exec, queryScalar } from '../helpers/db.js';
 import { captureArtefact } from '../helpers/artefact.js';
 
 function readDevpodSecret(key: string): string {
-  // The signing secret lives in ~/.config/devpods/magiklead/.env.backend
-  // because devpods injects it into both api + worker containers.
+  // In CI the secret is in the environment (api + worker share the
+  // same value); locally it lives in the devpod's injected env file.
+  const fromEnv = process.env[key];
+  if (fromEnv) return fromEnv;
   const home = process.env.HOME ?? '';
   const out = execFileSync(
     'grep',

@@ -110,6 +110,9 @@ jobs:
           go-version-file: backend/go.mod
           cache-dependency-path: backend/go.sum
 
+      - name: Ensure psql (the e2e DB helper talks to Postgres directly)
+        run: command -v psql || { sudo apt-get update && sudo apt-get install -y postgresql-client; }
+
       - name: Start MinIO + create bucket
         env:
           AWS_ACCESS_KEY_ID: minioadmin
