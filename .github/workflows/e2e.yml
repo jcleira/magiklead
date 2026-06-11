@@ -1,16 +1,16 @@
 name: e2e
 
-# Phase 4 of the real-product-release PRD. Walks the 15 D-bar
-# flows end-to-end against a live devpod on every PR + nightly
-# at 02:17 UTC. Artefacts (per-spec screenshot + DB JSON
-# snapshot) upload regardless of pass/fail so the operator's
-# 30-second post-CI review is "scroll the artefacts, look for
-# surprises."
+# Walks the 15 D-bar flows end-to-end on every PR + nightly at 02:17
+# UTC. The stack is stood up natively on the runner — Postgres / Redis
+# / MinIO / MailHog as containers, the Go api + worker and the Next.js
+# frontend as plain processes — so CI does NOT depend on the devpods
+# CLI (that's a local-dev convenience, not a CI dependency).
 #
-# Real-creds upgrades (Gmail Workspace, Stripe Live, PDL) are
-# gated by GitHub secrets. Absent any of them, the corresponding
-# (real creds) specs skip and the AFK substitute path proves the
-# integration up to the third-party boundary.
+# Real-creds upgrades (Gmail Workspace, Stripe Live, PDL) are gated by
+# GitHub secrets; absent any of them the corresponding specs skip and
+# the AFK substitute path proves the integration up to the third-party
+# boundary. The suite still needs the Clerk dev secrets configured —
+# the api fails fast without CLERK_SECRET_KEY.
 
 on:
   pull_request:
@@ -18,7 +18,6 @@ on:
       - 'backend/**'
       - 'frontend/**'
       - 'tests/e2e/**'
-      - 'devpod/**'
       - '.github/workflows/e2e.yml'
   schedule:
     # 02:17 UTC nightly — out of the hourly cron pile-up.
@@ -34,46 +33,121 @@ jobs:
     name: 15-flow walk
     runs-on: ubuntu-24.04
     timeout-minutes: 30
+
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: magiklead
+          POSTGRES_PASSWORD: magiklead
+          POSTGRES_DB: magiklead
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U magiklead"
+          --health-interval 5s --health-timeout 5s --health-retries 12
+      redis:
+        image: redis:7
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s --health-timeout 5s --health-retries 12
+      mailhog:
+        # Default entrypoint starts MailHog (SMTP 1025, HTTP API 8025) —
+        # no custom command needed, so it runs fine as a service.
+        image: mailhog/mailhog:latest
+        ports:
+          - 1025:1025
+          - 8025:8025
+
+    env:
+      # --- service URLs: no devpod / no Traefik, everything on localhost ---
+      DATABASE_URL: postgres://magiklead:magiklead@localhost:5432/magiklead?sslmode=disable
+      # asynq takes a bare host:port (NOT a redis:// URL).
+      REDIS_URL: localhost:6379
+      S3_ENDPOINT: http://localhost:9000
+      S3_PUBLIC_ENDPOINT: http://localhost:9000
+      S3_BUCKET: magiklead
+      S3_ACCESS_KEY: minioadmin
+      S3_SECRET_KEY: minioadmin
+      S3_REGION: us-east-1
+      S3_USE_SSL: 'false'
+      APP_URL: http://localhost:8080
+      FRONTEND_URL: http://localhost:3000
+      # --- app config ---
+      APP_ENV: ci
+      PORT: '8080'
+      ADMIN_EMAILS: ci@magiklead.com
+      # Set unconditionally so the api never fails fast on it when a
+      # GOOGLE_CLIENT_ID secret happens to be present.
+      GMAIL_OAUTH_STATE_SECRET: ci-gmail-oauth-state-secret
+      UNSUBSCRIBE_MAIL_DOMAIN: mail.ci.magiklead.com
+      SYSTEM_SMTP_HOST: localhost
+      SYSTEM_SMTP_PORT: '1025'
+      SYSTEM_SMTP_FROM: no-reply@magiklead.localhost
+      # --- secrets (gated; absent → dependent flows skip/degrade) ---
+      CLERK_SECRET_KEY: ${{ secrets.CLERK_DEV_SECRET_KEY }}
+      CLERK_WEBHOOK_SECRET: ${{ secrets.CLERK_DEV_WEBHOOK_SECRET }}
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+      UNSUBSCRIBE_SIGNING_SECRET: ${{ secrets.UNSUBSCRIBE_SIGNING_SECRET }}
+      PDL_API_KEY: ${{ secrets.PDL_API_KEY }}
+      STRIPE_SECRET_KEY: ${{ secrets.STRIPE_SECRET_KEY }}
+      GOOGLE_CLIENT_ID: ${{ secrets.GOOGLE_CLIENT_ID }}
+      GOOGLE_CLIENT_SECRET: ${{ secrets.GOOGLE_CLIENT_SECRET }}
+
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install devpods CLI
-        run: |
-          curl -fsSL https://github.com/jcleira/devpods/releases/latest/download/devpods-linux-x64 -o /usr/local/bin/devpods
-          chmod +x /usr/local/bin/devpods
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: backend/go.mod
+          cache-dependency-path: backend/go.sum
 
-      - name: Provision devpod
+      - name: Start MinIO + create bucket
         env:
-          CLERK_SECRET_KEY: ${{ secrets.CLERK_DEV_SECRET_KEY }}
-          CLERK_WEBHOOK_SECRET: ${{ secrets.CLERK_DEV_WEBHOOK_SECRET }}
-          NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY: ${{ secrets.CLERK_DEV_PUBLISHABLE_KEY }}
-          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
-          ADMIN_EMAILS: ci@magiklead.com
-          UNSUBSCRIBE_SIGNING_SECRET: ${{ secrets.UNSUBSCRIBE_SIGNING_SECRET }}
-          UNSUBSCRIBE_MAIL_DOMAIN: mail.ci.magiklead.com
-          PDL_API_KEY: ${{ secrets.PDL_API_KEY }}
-          GOOGLE_CLIENT_ID: ${{ secrets.GOOGLE_CLIENT_ID }}
-          GOOGLE_CLIENT_SECRET: ${{ secrets.GOOGLE_CLIENT_SECRET }}
-          GOOGLE_REDIRECT_URI: http://api-ci.magiklead.localhost/api/gmail/callback
+          AWS_ACCESS_KEY_ID: minioadmin
+          AWS_SECRET_ACCESS_KEY: minioadmin
+          AWS_DEFAULT_REGION: us-east-1
         run: |
-          mkdir -p "$HOME/.config/devpods/magiklead"
-          cat > "$HOME/.config/devpods/magiklead/.env.backend" <<EOF
-          CLERK_SECRET_KEY=$CLERK_SECRET_KEY
-          CLERK_WEBHOOK_SECRET=$CLERK_WEBHOOK_SECRET
-          NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY=$NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY
-          ANTHROPIC_API_KEY=$ANTHROPIC_API_KEY
-          ADMIN_EMAILS=$ADMIN_EMAILS
-          UNSUBSCRIBE_SIGNING_SECRET=$UNSUBSCRIBE_SIGNING_SECRET
-          UNSUBSCRIBE_MAIL_DOMAIN=$UNSUBSCRIBE_MAIL_DOMAIN
-          PDL_API_KEY=$PDL_API_KEY
-          GOOGLE_CLIENT_ID=$GOOGLE_CLIENT_ID
-          GOOGLE_CLIENT_SECRET=$GOOGLE_CLIENT_SECRET
-          GOOGLE_REDIRECT_URI=$GOOGLE_REDIRECT_URI
-          EOF
-          devpods up --name ci
+          docker run -d --name minio -p 9000:9000 \
+            -e MINIO_ROOT_USER=minioadmin -e MINIO_ROOT_PASSWORD=minioadmin \
+            minio/minio:latest server /data
+          for i in $(seq 1 30); do
+            curl -fsS http://localhost:9000/minio/health/live && break
+            sleep 2
+          done
+          aws --endpoint-url http://localhost:9000 s3 mb s3://magiklead || true
+
+      - name: Run migrations
+        working-directory: backend
+        run: go run ./cmd/migrate
+
+      - name: Build backend binaries
+        working-directory: backend
+        run: |
+          go build -o ./bin/api ./cmd/api
+          go build -o ./bin/worker ./cmd/worker
+
+      - name: Start api + worker
+        working-directory: backend
+        run: |
+          nohup ./bin/api    > /tmp/api.log    2>&1 &
+          nohup ./bin/worker > /tmp/worker.log 2>&1 &
+
+      - name: Wait for api health
+        run: |
+          for i in $(seq 1 60); do
+            if curl -fsS http://localhost:8080/health >/dev/null 2>&1; then
+              echo "api healthy"; exit 0
+            fi
+            sleep 2
+          done
+          echo "::error::api did not become healthy"; echo "--- api.log ---"; cat /tmp/api.log; exit 1
 
       - name: Seed canonical fixture
-        run: devpods exec --name ci api go run ./cmd/seed
+        working-directory: backend
+        run: go run ./cmd/seed
 
       - uses: pnpm/action-setup@v4
         with:
@@ -82,15 +156,37 @@ jobs:
         with:
           node-version: '22'
           cache: 'pnpm'
-          cache-dependency-path: tests/e2e/pnpm-lock.yaml
+          cache-dependency-path: |
+            frontend/pnpm-lock.yaml
+            tests/e2e/pnpm-lock.yaml
 
-      - name: Install e2e deps
-        working-directory: tests/e2e
-        run: pnpm install --frozen-lockfile
+      - name: Build + start frontend
+        working-directory: frontend
+        env:
+          NEXT_PUBLIC_API_URL: http://localhost:8080
+          NEXT_PUBLIC_APP_URL: http://localhost:3000
+          NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY: ${{ secrets.CLERK_DEV_PUBLISHABLE_KEY }}
+          CLERK_SECRET_KEY: ${{ secrets.CLERK_DEV_SECRET_KEY }}
+        run: |
+          pnpm install --frozen-lockfile
+          pnpm build
+          PORT=3000 nohup pnpm start > /tmp/frontend.log 2>&1 &
 
-      - name: Install Playwright chromium
+      - name: Wait for frontend
+        run: |
+          for i in $(seq 1 60); do
+            if curl -fsS http://localhost:3000 >/dev/null 2>&1; then
+              echo "frontend up"; exit 0
+            fi
+            sleep 2
+          done
+          echo "::error::frontend did not boot"; cat /tmp/frontend.log; exit 1
+
+      - name: Install e2e deps + browser
         working-directory: tests/e2e
-        run: pnpm exec playwright install --with-deps chromium
+        run: |
+          pnpm install --frozen-lockfile
+          pnpm exec playwright install --with-deps chromium
 
       - name: Write .env.e2e
         working-directory: tests/e2e
@@ -102,8 +198,8 @@ jobs:
         run: |
           cat > .env.e2e <<EOF
           CLERK_SECRET_KEY=$CLERK_SECRET_KEY
-          E2E_API_URL=http://api-ci.magiklead.localhost
-          E2E_FRONTEND_URL=http://ci.magiklead.localhost
+          E2E_API_URL=http://localhost:8080
+          E2E_FRONTEND_URL=http://localhost:3000
           ${E2E_REAL_GMAIL:+E2E_REAL_GMAIL=$E2E_REAL_GMAIL}
           ${E2E_REAL_STRIPE:+E2E_REAL_STRIPE=$E2E_REAL_STRIPE}
           ${E2E_REAL_PDL:+E2E_REAL_PDL=$E2E_REAL_PDL}
@@ -115,6 +211,13 @@ jobs:
           CI: 'true'
         run: pnpm e2e
 
+      - name: Dump server logs on failure
+        if: failure()
+        run: |
+          echo "=== api.log ===";      tail -120 /tmp/api.log      2>/dev/null || true
+          echo "=== worker.log ===";   tail -120 /tmp/worker.log   2>/dev/null || true
+          echo "=== frontend.log ==="; tail -120 /tmp/frontend.log 2>/dev/null || true
+
       - name: Upload artefacts
         if: always()
         uses: actions/upload-artifact@v4
@@ -125,7 +228,3 @@ jobs:
             tests/e2e/playwright-report/
             tests/e2e/test-results/
           retention-days: 14
-
-      - name: Tear down devpod
-        if: always()
-        run: devpods down --name ci --force
