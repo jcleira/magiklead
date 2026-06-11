@@ -1,3 +1,11 @@
+# pnpm 11.5+ requires an explicit build decision per dependency with a
+# build script (allowBuilds). These rely on prebuilt binaries, so we do
+# not run their install scripts. ignoredBuiltDependencies is kept for
+# older pnpm (pre-11.5) compatibility.
+allowBuilds:
+  '@clerk/shared': false
+  sharp: false
+  unrs-resolver: false
 ignoredBuiltDependencies:
   - '@clerk/shared'
   - sharp
