@@ -83,14 +83,20 @@ jobs:
       # GOOGLE_CLIENT_ID secret happens to be present.
       GMAIL_OAUTH_STATE_SECRET: ci-gmail-oauth-state-secret
       UNSUBSCRIBE_MAIL_DOMAIN: mail.ci.magiklead.com
+      # Arbitrary shared signing key — api and worker only need the same
+      # value; CI is ephemeral, so a constant is correct (not a secret).
+      UNSUBSCRIBE_SIGNING_SECRET: ci-unsubscribe-signing-secret-not-a-real-secret
       SYSTEM_SMTP_HOST: localhost
       SYSTEM_SMTP_PORT: '1025'
       SYSTEM_SMTP_FROM: no-reply@magiklead.localhost
-      # --- secrets (gated; absent → dependent flows skip/degrade) ---
+      # --- real credentials (must be configured as repo secrets) ---
+      # CLERK_*: required — the api fails fast without the secret key and
+      # the suite tests real Clerk auth. ANTHROPIC: needed by the
+      # website-analyze / plays flows. Absent → those steps fail.
       CLERK_SECRET_KEY: ${{ secrets.CLERK_DEV_SECRET_KEY }}
       CLERK_WEBHOOK_SECRET: ${{ secrets.CLERK_DEV_WEBHOOK_SECRET }}
       ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
-      UNSUBSCRIBE_SIGNING_SECRET: ${{ secrets.UNSUBSCRIBE_SIGNING_SECRET }}
+      # --- real-creds upgrades (gated; absent → those specs skip) ---
       PDL_API_KEY: ${{ secrets.PDL_API_KEY }}
       STRIPE_SECRET_KEY: ${{ secrets.STRIPE_SECRET_KEY }}
       GOOGLE_CLIENT_ID: ${{ secrets.GOOGLE_CLIENT_ID }}
