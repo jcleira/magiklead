@@ -11,6 +11,149 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+const countCampaignBouncedTotal = `-- name: CountCampaignBouncedTotal :one
+SELECT COUNT(DISTINCT ee.campaign_lead_id)::bigint
+FROM email_events ee
+JOIN campaign_leads cl ON cl.id = ee.campaign_lead_id
+WHERE cl.campaign_id = $1
+  AND ee.event_type IN ('bounced', 'soft-bounce')
+`
+
+// CountCampaignBouncedTotal de-duplicates per campaign_lead: a lead
+// with 2 soft bounces + 1 hard bounce counts as 1. The conceptual
+// contract is "leads that have bounced at least once in this
+// campaign," not "total bounce events" — the dashboard's audience
+// cares about how many addresses are unreachable, not how many DSNs
+// arrived. Event names match issue #2's vocabulary ('bounced' for
+// hard, 'soft-bounce' for soft) rather than the PRD's draft text.
+func (q *Queries) CountCampaignBouncedTotal(ctx context.Context, campaignID pgtype.UUID) (int64, error) {
+	row := q.db.QueryRow(ctx, countCampaignBouncedTotal, campaignID)
+	var column_1 int64
+	err := row.Scan(&column_1)
+	return column_1, err
+}
+
+const countCampaignLeadsTotal = `-- name: CountCampaignLeadsTotal :one
+
+SELECT COUNT(*)::bigint
+FROM campaign_leads
+WHERE campaign_id = $1
+`
+
+// Metrics aggregations for the per-campaign dashboard (issue #9).
+// All filter by campaign_id; the handler verifies the campaign belongs
+// to the caller's tenant via GetCampaign before running these. The
+// queries are intentionally five small SELECTs rather than one large
+// joined view so each can be unit-tested in isolation and the SQL
+// planner has the simplest possible shape for each count.
+func (q *Queries) CountCampaignLeadsTotal(ctx context.Context, campaignID pgtype.UUID) (int64, error) {
+	row := q.db.QueryRow(ctx, countCampaignLeadsTotal, campaignID)
+	var column_1 int64
+	err := row.Scan(&column_1)
+	return column_1, err
+}
+
+const countCampaignRepliedTotal = `-- name: CountCampaignRepliedTotal :one
+SELECT COUNT(*)::bigint
+FROM email_events ee
+JOIN campaign_leads cl ON cl.id = ee.campaign_lead_id
+WHERE cl.campaign_id = $1
+  AND ee.event_type = 'replied'
+`
+
+func (q *Queries) CountCampaignRepliedTotal(ctx context.Context, campaignID pgtype.UUID) (int64, error) {
+	row := q.db.QueryRow(ctx, countCampaignRepliedTotal, campaignID)
+	var column_1 int64
+	err := row.Scan(&column_1)
+	return column_1, err
+}
+
+const countCampaignSentByStep = `-- name: CountCampaignSentByStep :many
+SELECT ee.step::int AS step_order, COUNT(*)::bigint AS count
+FROM email_events ee
+JOIN campaign_leads cl ON cl.id = ee.campaign_lead_id
+WHERE cl.campaign_id = $1
+  AND ee.event_type = 'sent'
+GROUP BY ee.step
+ORDER BY ee.step
+`
+
+type CountCampaignSentByStepRow struct {
+	StepOrder int32 `json:"step_order"`
+	Count     int64 `json:"count"`
+}
+
+// CountCampaignSentByStep returns one row per step that has at least
+// one 'sent' event. The handler turns this into an array of
+// {step_order, count} objects for the dashboard's per-step table.
+func (q *Queries) CountCampaignSentByStep(ctx context.Context, campaignID pgtype.UUID) ([]CountCampaignSentByStepRow, error) {
+	rows, err := q.db.Query(ctx, countCampaignSentByStep, campaignID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []CountCampaignSentByStepRow{}
+	for rows.Next() {
+		var i CountCampaignSentByStepRow
+		if err := rows.Scan(&i.StepOrder, &i.Count); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const countCampaignSentTotal = `-- name: CountCampaignSentTotal :one
+SELECT COUNT(*)::bigint
+FROM email_events ee
+JOIN campaign_leads cl ON cl.id = ee.campaign_lead_id
+WHERE cl.campaign_id = $1
+  AND ee.event_type = 'sent'
+`
+
+func (q *Queries) CountCampaignSentTotal(ctx context.Context, campaignID pgtype.UUID) (int64, error) {
+	row := q.db.QueryRow(ctx, countCampaignSentTotal, campaignID)
+	var column_1 int64
+	err := row.Scan(&column_1)
+	return column_1, err
+}
+
+const countCampaignUnsubscribedTotal = `-- name: CountCampaignUnsubscribedTotal :one
+WITH best AS (
+    SELECT DISTINCT ON (em.person_id) em.person_id, em.email
+    FROM emails em
+    ORDER BY em.person_id,
+             (em.verified_at IS NOT NULL) DESC,
+             em.bounce_count ASC,
+             em.created_at ASC
+)
+SELECT COUNT(DISTINCT cl.id)::bigint
+FROM campaign_leads cl
+JOIN campaigns c       ON c.id = cl.campaign_id
+LEFT JOIN persons p    ON p.id = cl.person_id
+LEFT JOIN best b       ON b.person_id = p.id
+LEFT JOIN leads l      ON l.id = cl.lead_id
+JOIN unsubscribes u    ON (u.tenant_id = c.tenant_id OR u.tenant_id IS NULL)
+                      AND lower(u.email) = lower(COALESCE(b.email, l.email))
+WHERE cl.campaign_id = $1
+`
+
+// CountCampaignUnsubscribedTotal joins each campaign_lead in this
+// campaign to its resolved email (canonical first, legacy fallback)
+// and checks whether that email appears in `unsubscribes` for the
+// campaign's tenant or globally. COUNT(DISTINCT cl.id) collapses the
+// case where a single lead matches both a tenant-scoped and a global
+// unsubscribe row.
+func (q *Queries) CountCampaignUnsubscribedTotal(ctx context.Context, campaignID pgtype.UUID) (int64, error) {
+	row := q.db.QueryRow(ctx, countCampaignUnsubscribedTotal, campaignID)
+	var column_1 int64
+	err := row.Scan(&column_1)
+	return column_1, err
+}
+
 const createCampaign = `-- name: CreateCampaign :one
 INSERT INTO campaigns (tenant_id, play_id, name, status, gmail_account_id, sequence, linkedin_sequence)
 VALUES ($1, $2, $3, $4, $5, $6, $7)

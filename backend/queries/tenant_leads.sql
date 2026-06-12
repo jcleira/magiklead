@@ -1,5 +1,11 @@
 -- tenant_leads — per-tenant association with canonical persons.
 
+-- AddTenantLead saves (or refreshes) a canonical person as this
+-- tenant's lead. The `inserted` flag (Postgres xmax=0 trick) is TRUE
+-- only when this row was a fresh INSERT — the handler reads it to
+-- gate the leads_used quota increment so re-saving the same person
+-- across campaigns doesn't double-count against the tenant's monthly
+-- quota.
 -- name: AddTenantLead :one
 INSERT INTO tenant_leads (tenant_id, person_id, status, notes, added_by_user_id)
 VALUES ($1, $2, COALESCE(sqlc.narg('status')::text, 'new'), $3, $4)
@@ -7,7 +13,7 @@ ON CONFLICT (tenant_id, person_id) DO UPDATE
     SET status           = COALESCE(EXCLUDED.status, tenant_leads.status),
         notes            = COALESCE(EXCLUDED.notes, tenant_leads.notes),
         added_by_user_id = COALESCE(EXCLUDED.added_by_user_id, tenant_leads.added_by_user_id)
-RETURNING *;
+RETURNING tenant_id, person_id, status, notes, added_at, added_by_user_id, (xmax = 0) AS inserted;
 
 -- name: GetTenantLead :one
 SELECT * FROM tenant_leads
@@ -41,3 +47,11 @@ LIMIT $2 OFFSET $3;
 SELECT COUNT(*) FROM tenant_leads
 WHERE tenant_id = $1
   AND (sqlc.narg('status')::text IS NULL OR status = sqlc.narg('status')::text);
+
+-- ListTenantLeadsForExport dumps every saved-lead row for a tenant,
+-- raw (no pagination, no JOIN). Used by the GDPR account-export
+-- endpoint (issue #11) to write tenant_leads.json.
+-- name: ListTenantLeadsForExport :many
+SELECT * FROM tenant_leads
+WHERE tenant_id = $1
+ORDER BY added_at;

@@ -132,3 +132,24 @@ WHERE campaign_id = $1 AND status = 'queued';
 -- name: PauseCampaignLeads :exec
 UPDATE campaign_leads SET next_send_at = NULL
 WHERE campaign_id = $1 AND status = 'active';
+
+-- ListCampaignLeadsForExport dumps every campaign_lead row tied to a
+-- tenant's campaigns, raw — no join resolution. Used by the GDPR
+-- account-export endpoint (issue #11) to write campaign_leads.json
+-- inside the user's archive.
+-- name: ListCampaignLeadsForExport :many
+SELECT cl.*
+FROM campaign_leads cl
+JOIN campaigns c ON c.id = cl.campaign_id
+WHERE c.tenant_id = $1
+ORDER BY cl.created_at;
+
+-- MarkCampaignLeadBounced halts the sequence on a hard bounce. The
+-- sender's GetDueLeads query filters WHERE status='active' so a
+-- bounced row stops receiving sends on the very next tick. We do
+-- not clear next_send_at — keeping the timestamp around is useful
+-- for "when did we last try?" forensics.
+-- name: MarkCampaignLeadBounced :exec
+UPDATE campaign_leads
+SET status = 'bounced'
+WHERE id = $1;

@@ -10,15 +10,23 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 
 	"github.com/jcleira/magiklead/backend/internal/repository"
+	"github.com/jcleira/magiklead/backend/internal/suppression"
 	apierr "github.com/jcleira/magiklead/backend/pkg/errors"
 )
 
 type CampaignHandler struct {
 	queries *repository.Queries
+	supp    *suppression.Module
 }
 
-func NewCampaignHandler(q *repository.Queries) *CampaignHandler {
-	return &CampaignHandler{queries: q}
+// NewCampaignHandler wires the campaign routes. supp is used by the
+// re-engage path (issue #4) to clear a reply-suppression and
+// reactivate a lead; the rest of the routes don't need it. The
+// existing two-arg call sites stay compiling by passing nil for supp
+// — the Reengage route panics-with-503 in that case rather than
+// silently no-op'ing.
+func NewCampaignHandler(q *repository.Queries, supp *suppression.Module) *CampaignHandler {
+	return &CampaignHandler{queries: q, supp: supp}
 }
 
 // Create handles POST /api/v1/campaigns
@@ -252,4 +260,130 @@ func (h *CampaignHandler) AddLeads(w http.ResponseWriter, r *http.Request) {
 	}
 
 	apierr.WriteJSON(w, http.StatusOK, map[string]int{"added": added, "skipped": skipped})
+}
+
+// Reengage handles POST /api/v1/campaigns/{id}/leads/{lead-id}/reengage.
+// It's the operator's escape hatch for "they replied with an
+// out-of-office, not a real reply" (user story 26). The handler
+// validates the URL params, confirms the lead belongs to a campaign
+// in the caller's tenant, and asks the suppression module to clear
+// the reply gate + reactivate the lead. Only the reply reason is
+// reversible; other suppression reasons stay in place.
+func (h *CampaignHandler) Reengage(w http.ResponseWriter, r *http.Request) {
+	if h.supp == nil {
+		apierr.WriteError(w, apierr.APIError{Status: 503, Code: "suppression_unavailable", Message: "suppression module not wired"})
+		return
+	}
+	campaignID, err := uuid.Parse(chi.URLParam(r, "id"))
+	if err != nil {
+		apierr.WriteError(w, apierr.APIError{Status: 400, Code: "bad_request", Message: "invalid campaign id"})
+		return
+	}
+	leadID, err := uuid.Parse(chi.URLParam(r, "lead_id"))
+	if err != nil {
+		apierr.WriteError(w, apierr.APIError{Status: 400, Code: "bad_request", Message: "invalid lead id"})
+		return
+	}
+
+	tenantID := getTenantID(r.Context())
+	// Confirm the lead belongs to a campaign in this tenant. Without
+	// this, any tenant could re-engage another tenant's leads by
+	// guessing UUIDs.
+	addr, err := h.queries.ResolveCampaignLeadAddress(r.Context(), pgUUID(leadID))
+	if err != nil {
+		apierr.WriteError(w, apierr.ErrNotFound)
+		return
+	}
+	if !addr.TenantID.Valid || uuid.UUID(addr.TenantID.Bytes) != tenantID {
+		apierr.WriteError(w, apierr.ErrNotFound)
+		return
+	}
+
+	if err := h.supp.ClearReply(r.Context(), leadID); err != nil {
+		apierr.WriteError(w, apierr.APIError{Status: 500, Code: "reengage_failed", Message: err.Error()})
+		return
+	}
+	apierr.WriteJSON(w, http.StatusOK, map[string]any{
+		"status":      "active",
+		"campaign_id": campaignID.String(),
+		"lead_id":     leadID.String(),
+	})
+}
+
+// Metrics handles GET /api/v1/campaigns/{id}/metrics — the data behind
+// the per-campaign dashboard (issue #9). Returns five aggregations
+// derived from `campaign_leads`, `email_events`, and `unsubscribes`:
+// total leads, total sent (with per-step breakdown), total replied,
+// total bounced (one address with multiple DSNs counts as one), and
+// total unsubscribed.
+//
+// Tenant scope is enforced via GetCampaign, mirroring the rest of the
+// campaign routes: a 404 for a campaign that exists under another
+// tenant is the same response shape as a campaign that does not exist
+// at all, so the endpoint never confirms cross-tenant IDs.
+func (h *CampaignHandler) Metrics(w http.ResponseWriter, r *http.Request) {
+	id, err := uuid.Parse(chi.URLParam(r, "id"))
+	if err != nil {
+		apierr.WriteError(w, apierr.ErrBadRequest)
+		return
+	}
+	tenantID := getTenantID(r.Context())
+	if _, err := h.queries.GetCampaign(r.Context(), repository.GetCampaignParams{ID: pgUUID(id), TenantID: pgUUID(tenantID)}); err != nil {
+		apierr.WriteError(w, apierr.ErrNotFound)
+		return
+	}
+
+	ctx := r.Context()
+	campaignID := pgUUID(id)
+
+	leadsTotal, err := h.queries.CountCampaignLeadsTotal(ctx, campaignID)
+	if err != nil {
+		apierr.WriteError(w, apierr.APIError{Status: 500, Code: "metrics_failed", Message: err.Error()})
+		return
+	}
+	sentTotal, err := h.queries.CountCampaignSentTotal(ctx, campaignID)
+	if err != nil {
+		apierr.WriteError(w, apierr.APIError{Status: 500, Code: "metrics_failed", Message: err.Error()})
+		return
+	}
+	sentByStepRows, err := h.queries.CountCampaignSentByStep(ctx, campaignID)
+	if err != nil {
+		apierr.WriteError(w, apierr.APIError{Status: 500, Code: "metrics_failed", Message: err.Error()})
+		return
+	}
+	repliedTotal, err := h.queries.CountCampaignRepliedTotal(ctx, campaignID)
+	if err != nil {
+		apierr.WriteError(w, apierr.APIError{Status: 500, Code: "metrics_failed", Message: err.Error()})
+		return
+	}
+	bouncedTotal, err := h.queries.CountCampaignBouncedTotal(ctx, campaignID)
+	if err != nil {
+		apierr.WriteError(w, apierr.APIError{Status: 500, Code: "metrics_failed", Message: err.Error()})
+		return
+	}
+	unsubscribedTotal, err := h.queries.CountCampaignUnsubscribedTotal(ctx, campaignID)
+	if err != nil {
+		apierr.WriteError(w, apierr.APIError{Status: 500, Code: "metrics_failed", Message: err.Error()})
+		return
+	}
+
+	// Re-shape the per-step rows into the documented JSON contract.
+	// Empty steps stay absent rather than turning into zero-count rows
+	// — the frontend treats missing steps as "nothing sent yet."
+	sentByStep := make([]map[string]any, 0, len(sentByStepRows))
+	for _, row := range sentByStepRows {
+		sentByStep = append(sentByStep, map[string]any{
+			"step_order": row.StepOrder,
+			"count":      row.Count,
+		})
+	}
+
+	apierr.WriteJSON(w, http.StatusOK, map[string]any{
+		"leads_total":        leadsTotal,
+		"sent_total":         sentTotal,
+		"sent_by_step":       sentByStep,
+		"replied_total":      repliedTotal,
+		"bounced_total":      bouncedTotal,
+		"unsubscribed_total": unsubscribedTotal,
+	})
 }

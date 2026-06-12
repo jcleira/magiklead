@@ -16,11 +16,6 @@ interface Campaign {
   created_at: string;
 }
 
-interface LeadCount {
-  status: string;
-  count: number;
-}
-
 interface CampaignLead {
   id: string;
   first_name: string;
@@ -43,6 +38,15 @@ interface SequenceStep {
   body: string;
 }
 
+interface CampaignMetrics {
+  leads_total: number;
+  sent_total: number;
+  sent_by_step: { step_order: number; count: number }[];
+  replied_total: number;
+  bounced_total: number;
+  unsubscribed_total: number;
+}
+
 const statusColor: Record<string, string> = {
   active: "bg-emerald-100 text-emerald-700",
   paused: "bg-amber-100 text-amber-700",
@@ -59,7 +63,6 @@ export default function CampaignDetailPage() {
   const { apiFetch } = useApi();
 
   const [campaign, setCampaign] = useState<Campaign | null>(null);
-  const [leadCounts, setLeadCounts] = useState<LeadCount[]>([]);
   const [leads, setLeads] = useState<CampaignLead[]>([]);
   const [loading, setLoading] = useState(true);
   const [actionLoading, setActionLoading] = useState<string | null>(null);
@@ -79,12 +82,11 @@ export default function CampaignDetailPage() {
 
   const loadData = useCallback(() => {
     Promise.all([
-      apiFetch<{ campaign: Campaign; lead_counts: LeadCount[] }>(`/api/v1/campaigns/${id}`),
+      apiFetch<{ campaign: Campaign }>(`/api/v1/campaigns/${id}`),
       apiFetch<CampaignLead[]>(`/api/v1/campaigns/${id}/leads`),
     ])
       .then(([detail, campaignLeads]) => {
         setCampaign(detail.campaign);
-        setLeadCounts(detail.lead_counts || []);
         setLeads(campaignLeads || []);
       })
       .catch(() => {})
@@ -175,6 +177,26 @@ export default function CampaignDetailPage() {
       setCampaign((prev) => prev ? { ...prev, status: "paused" } : prev);
     } catch {}
     setActionLoading(null);
+  }
+
+  // Re-engage clears the reply-suppression and flips the lead back
+  // to 'active' so the next worker tick resumes the sequence. Used
+  // when the operator decides a detected reply was actually an
+  // auto-responder (out-of-office, vacation reply).
+  async function handleReengage(lead: CampaignLead) {
+    const key = `reengage-${lead.id}`;
+    setActionLoading(key);
+    try {
+      await apiFetch(`/api/v1/campaigns/${id}/leads/${lead.id}/reengage`, {
+        method: "POST",
+      });
+      setSelectedLead(null);
+      loadData();
+    } catch (e) {
+      alert("Re-engage failed: " + (e instanceof Error ? e.message : "unknown error"));
+    } finally {
+      setActionLoading(null);
+    }
   }
 
   if (loading) {
@@ -302,17 +324,10 @@ export default function CampaignDetailPage() {
         </div>
       )}
 
-      {/* Lead Counts — shown when not draft */}
-      {!isDraft && leadCounts.length > 0 && (
-        <div className="mt-8 grid gap-4 sm:grid-cols-3 lg:grid-cols-6">
-          {leadCounts.map((lc) => (
-            <div key={lc.status} className="rounded-xl border border-slate-200 p-4">
-              <p className="text-xs capitalize text-slate-500">{lc.status}</p>
-              <p className="mt-1 text-xl font-bold text-slate-900">{lc.count}</p>
-            </div>
-          ))}
-        </div>
-      )}
+      {/* Per-campaign metrics — shown when not draft. Self-contained so
+          the 15s poll only re-renders this block; everything below stays
+          static. */}
+      {!isDraft && <MetricsSection campaignId={id} />}
 
       {/* Leads Table */}
       {hasLeads && (
@@ -622,6 +637,24 @@ export default function CampaignDetailPage() {
                 {selectedLead.last_sent_at && (
                   <p className="text-sm text-slate-500">Last sent: {new Date(selectedLead.last_sent_at).toLocaleString()}</p>
                 )}
+                {selectedLead.last_replied_at && (
+                  <p className="text-sm text-slate-500">Reply detected: {new Date(selectedLead.last_replied_at).toLocaleString()}</p>
+                )}
+                {selectedLead.status === "replied" && (
+                  <div className="rounded-lg border border-amber-200 bg-amber-50 p-3">
+                    <p className="text-sm font-medium text-amber-900">Sequence paused on reply</p>
+                    <p className="mt-1 text-xs text-amber-700">
+                      If this reply was actually an out-of-office or auto-responder, re-engage to resume the sequence.
+                    </p>
+                    <button
+                      onClick={() => handleReengage(selectedLead)}
+                      disabled={actionLoading === `reengage-${selectedLead.id}`}
+                      className="mt-3 rounded-lg bg-amber-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-amber-700 disabled:opacity-50"
+                    >
+                      {actionLoading === `reengage-${selectedLead.id}` ? "Re-engaging…" : "Re-engage this lead"}
+                    </button>
+                  </div>
+                )}
               </div>
 
               {/* No email warning */}
@@ -727,6 +760,97 @@ function InfoRow({ label, value, empty, link }: { label: string; value: string |
         )
       ) : (
         <span className="italic text-slate-300">{empty}</span>
+      )}
+    </div>
+  );
+}
+
+// MetricsSection owns its own polling lifecycle (15s tick while the
+// page is open). Extracted from the parent so a metrics refresh only
+// re-renders this block — the leads table, sequence list, and lead
+// dialog are insulated from the tick. The interval is paused while the
+// document is hidden so a backgrounded tab doesn't keep hitting the
+// API; restarts on visibility-restore.
+function MetricsSection({ campaignId }: { campaignId: string }) {
+  const { apiFetch } = useApi();
+  const [metrics, setMetrics] = useState<CampaignMetrics | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    const fetchMetrics = () => {
+      apiFetch<CampaignMetrics>(`/api/v1/campaigns/${campaignId}/metrics`)
+        .then((m) => { if (!cancelled) setMetrics(m); })
+        .catch(() => {});
+    };
+    fetchMetrics();
+    let interval: number | null = window.setInterval(fetchMetrics, 15000);
+    const onVisibility = () => {
+      if (document.hidden) {
+        if (interval !== null) { window.clearInterval(interval); interval = null; }
+      } else {
+        if (interval === null) {
+          fetchMetrics();
+          interval = window.setInterval(fetchMetrics, 15000);
+        }
+      }
+    };
+    document.addEventListener("visibilitychange", onVisibility);
+    return () => {
+      cancelled = true;
+      if (interval !== null) window.clearInterval(interval);
+      document.removeEventListener("visibilitychange", onVisibility);
+    };
+  }, [apiFetch, campaignId]);
+
+  if (!metrics) {
+    return (
+      <div className="mt-8 grid gap-4 sm:grid-cols-3 lg:grid-cols-5">
+        {[0, 1, 2, 3, 4].map((i) => (
+          <div key={i} className="h-20 animate-pulse rounded-xl bg-slate-100" />
+        ))}
+      </div>
+    );
+  }
+
+  const cards: { label: string; value: number; tone: string }[] = [
+    { label: "Leads",        value: metrics.leads_total,        tone: "text-slate-900" },
+    { label: "Sent",         value: metrics.sent_total,         tone: "text-slate-900" },
+    { label: "Replied",      value: metrics.replied_total,      tone: "text-blue-700" },
+    { label: "Bounced",      value: metrics.bounced_total,      tone: "text-red-700" },
+    { label: "Unsubscribed", value: metrics.unsubscribed_total, tone: "text-amber-700" },
+  ];
+
+  return (
+    <div className="mt-8">
+      <div className="grid gap-4 sm:grid-cols-3 lg:grid-cols-5">
+        {cards.map((c) => (
+          <div key={c.label} className="rounded-xl border border-slate-200 p-4">
+            <p className="text-xs text-slate-500">{c.label}</p>
+            <p className={`mt-1 text-2xl font-bold ${c.tone}`}>{c.value}</p>
+          </div>
+        ))}
+      </div>
+
+      {metrics.sent_by_step.length > 0 && (
+        <div className="mt-6 rounded-xl border border-slate-200 p-5">
+          <h3 className="text-sm font-semibold text-slate-700">Sent by step</h3>
+          <table className="mt-3 w-full text-left text-sm">
+            <thead>
+              <tr className="border-b border-slate-200 text-slate-500">
+                <th className="pb-2 pr-4 font-medium">Step</th>
+                <th className="pb-2 font-medium">Sent</th>
+              </tr>
+            </thead>
+            <tbody>
+              {metrics.sent_by_step.map((row) => (
+                <tr key={row.step_order} className="border-b border-slate-100 last:border-b-0">
+                  <td className="py-2 pr-4 text-slate-700">Step {row.step_order}</td>
+                  <td className="py-2 font-semibold text-slate-900">{row.count}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
       )}
     </div>
   );

@@ -18,13 +18,13 @@ again from any tenant on the platform.
 
 ## Acceptance criteria
 
-- [ ] Every outbound message via `gmail/sender` includes:
+- [x] Every outbound message via `gmail/sender` includes:
   - `List-Unsubscribe: <mailto:unsubscribe+<token>@<mail-domain>>, <https://<app-domain>/api/v1/public/unsubscribe?token=<token>>`,
   - `List-Unsubscribe-Post: List-Unsubscribe=One-Click`.
   - `<token>` is a signed JWT (HS256 with a backend secret)
     encoding the lead's email, tenant ID, and an expiry far enough
     out that suppression remains actionable (e.g. 5 years).
-- [ ] New public endpoint
+- [x] New public endpoint
       `POST /api/v1/public/unsubscribe?token=<jwt>`:
   - validates the JWT signature and expiry,
   - calls `suppression.RecordUnsubscribe(ctx, email,
@@ -35,11 +35,11 @@ again from any tenant on the platform.
     `(NULL, email)`).
   - returns a plain confirmation page (200 with a small HTML
     "You've been unsubscribed" body).
-- [ ] `GET /api/v1/public/unsubscribe?token=<jwt>` returns the
+- [x] `GET /api/v1/public/unsubscribe?token=<jwt>` returns the
       same confirmation page (some email clients pre-fetch on hover
       — RFC 8058 says POST is the one-click path, GET is a
       legitimate fallback).
-- [ ] `mailto:unsubscribe+<token>@<mail-domain>` handler: there is
+- [x] `mailto:unsubscribe+<token>@<mail-domain>` handler: there is
       no inbound-email-processing infra in this release. Document
       in the operator runbook that the `mailto:` channel is
       *advertised* (Gmail's deliverability gate requires both
@@ -47,18 +47,25 @@ again from any tenant on the platform.
       up unanswered until a follow-up wires inbound parsing. Mark
       this as a known operational gap; PRD section "Out of scope"
       does NOT cover this but it's an honest small-scale call.
-- [ ] Once unsubscribed for a given (tenant, email), the worker's
+      *Documented in `CLAUDE.md` under "Known operational gaps".*
+- [x] Once unsubscribed for a given (tenant, email), the worker's
       next tick skips that lead via `suppression.IsSuppressed`.
-- [ ] Unit tests for the public endpoint:
+      *Already wired by issue #2; covered end-to-end by
+      `TestProcessQueue_SuppressionGate` (integration).*
+- [x] Unit tests for the public endpoint:
   - valid token: writes the unsubscribe row, returns 200,
   - expired token: returns 410 Gone,
   - tampered token: returns 401,
   - already-unsubscribed: idempotent — returns 200, no duplicate
     row.
-- [ ] Manual local verification: send a campaign message to a real
+- [ ]† Manual local verification: send a campaign message to a real
       Gmail address, click the unsubscribe header in Gmail's UI
       (the "Unsubscribe" link Gmail surfaces from the `List-Unsubscribe`
-      header), confirm next worker tick skips that lead.
+      header), confirm next worker tick skips that lead. **Deferred —
+      depends on the same Gmail OAuth prerequisites as #3
+      (UI to connect Gmail, public HTTPS callback, Google Cloud
+      Console consent). Tick once #8 ships the Connect Gmail UI
+      and the operator can drive the full flow.**
 
 ## Modules touched
 

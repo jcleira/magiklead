@@ -37,20 +37,21 @@ startup without complaining; the third is a process hardening note.
 
 ## Acceptance criteria
 
-- [ ] api startup rejects placeholder `CLERK_SECRET_KEY` values with
+- [x] api startup rejects placeholder `CLERK_SECRET_KEY` values with
       a clear error message (not a generic "missing env var"); regex
       check on `^sk_(test|live)_[A-Za-z0-9]{20,}$`.
-- [ ] Unit test for the clerk format check covers: valid test key,
+- [x] Unit test for the clerk format check covers: valid test key,
       valid live key, placeholder, empty string, malformed prefix.
-- [ ] `backend/internal/storage/s3.go` fix is committed; unit test
+- [x] `backend/internal/storage/s3.go` fix is committed; unit test
       exercises `http://host:9000`, `https://host:9000`, `host:9000`
       (no scheme), and a malformed URL with garbage.
-- [ ] `devpod/seeds/README.md` (or equivalent) documents the
+- [x] `devpod/seeds/README.md` (or equivalent) documents the
       regenerate-after-mutation rule.
-- [ ] Pending uncommitted fixes from the 2026-05-07 smoke walk are
+- [x] Pending uncommitted fixes from the 2026-05-07 smoke walk are
       committed: storage `s3.go`, `next.config.ts` `allowedDevOrigins`,
       and any `.env.backend` template touch-ups. Verify with
-      `git status` clean afterwards.
+      `git status` clean afterwards. (All landed in c05a8a3 prior to
+      this issue's work; `.env.backend` is user-owned, not in repo.)
 
 ## Modules touched
 

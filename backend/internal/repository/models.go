@@ -69,6 +69,7 @@ type Email struct {
 	BounceCount        pgtype.Int4        `json:"bounce_count"`
 	IsCatchall         pgtype.Bool        `json:"is_catchall"`
 	CreatedAt          pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt          pgtype.Timestamptz `json:"updated_at"`
 }
 
 type EmailAccount struct {
@@ -98,6 +99,7 @@ type EmailEvent struct {
 	Step           int32              `json:"step"`
 	Metadata       []byte             `json:"metadata"`
 	CreatedAt      pgtype.Timestamptz `json:"created_at"`
+	GmailMessageID pgtype.Text        `json:"gmail_message_id"`
 }
 
 type Employment struct {
@@ -133,6 +135,8 @@ type GmailAccount struct {
 	DailySentCount   pgtype.Int4        `json:"daily_sent_count"`
 	DailySentResetAt pgtype.Timestamptz `json:"daily_sent_reset_at"`
 	CreatedAt        pgtype.Timestamptz `json:"created_at"`
+	LastHistoryID    pgtype.Text        `json:"last_history_id"`
+	LastPolledAt     pgtype.Timestamptz `json:"last_polled_at"`
 }
 
 type Lead struct {
@@ -192,6 +196,8 @@ type Organization struct {
 	PrimaryDomain pgtype.Text        `json:"primary_domain"`
 	CreatedAt     pgtype.Timestamptz `json:"created_at"`
 	UpdatedAt     pgtype.Timestamptz `json:"updated_at"`
+	Industries    []string           `json:"industries"`
+	SizeRange     pgtype.Text        `json:"size_range"`
 }
 
 type OrganizationAlias struct {
@@ -217,6 +223,8 @@ type Person struct {
 	CreatedAt      pgtype.Timestamptz `json:"created_at"`
 	UpdatedAt      pgtype.Timestamptz `json:"updated_at"`
 	NormalizedName string             `json:"normalized_name"`
+	Location       pgtype.Text        `json:"location"`
+	HasEmail       bool               `json:"has_email"`
 }
 
 type PersonAlias struct {
@@ -336,6 +344,14 @@ type TenantLead struct {
 	Notes         pgtype.Text        `json:"notes"`
 	AddedAt       pgtype.Timestamptz `json:"added_at"`
 	AddedByUserID pgtype.UUID        `json:"added_by_user_id"`
+}
+
+type Unsubscribe struct {
+	ID        pgtype.UUID        `json:"id"`
+	TenantID  pgtype.UUID        `json:"tenant_id"`
+	Email     string             `json:"email"`
+	Reason    string             `json:"reason"`
+	CreatedAt pgtype.Timestamptz `json:"created_at"`
 }
 
 type User struct {

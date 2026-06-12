@@ -36,6 +36,20 @@ WHERE stripe_subscription_id = $1;
 -- name: UpdateStripeCustomer :exec
 UPDATE subscriptions SET stripe_customer_id = $2 WHERE tenant_id = $1;
 
+-- LinkCheckoutSubscription runs from the checkout.session.completed
+-- webhook handler. It writes the new plan + limits + stripe IDs in one
+-- shot, identified by tenant_id (which we receive in session metadata).
+-- Period dates are filled in by the subsequent
+-- customer.subscription.{created,updated} event via
+-- UpdateSubscriptionByStripeID; setting stripe_subscription_id here is
+-- what lets that follow-up update find the row.
+-- name: LinkCheckoutSubscription :exec
+UPDATE subscriptions
+SET plan = $2, leads_limit = $3, sequences_limit = $4,
+    stripe_customer_id = $5,
+    stripe_subscription_id = $6
+WHERE tenant_id = $1;
+
 -- name: IncrementLeadsUsed :exec
 UPDATE subscriptions SET leads_used = leads_used + $2 WHERE tenant_id = $1;
 

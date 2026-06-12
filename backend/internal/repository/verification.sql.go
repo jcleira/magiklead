@@ -16,7 +16,7 @@ INSERT INTO emails (email, person_id, verification_method)
 VALUES ($1, $2, $3)
 ON CONFLICT (email) DO UPDATE
     SET person_id = COALESCE(emails.person_id, EXCLUDED.person_id)
-RETURNING id, email, person_id, verified_at, verification_method, bounce_count, is_catchall, created_at
+RETURNING id, email, person_id, verified_at, verification_method, bounce_count, is_catchall, created_at, updated_at
 `
 
 type CreateEmailParams struct {
@@ -37,6 +37,7 @@ func (q *Queries) CreateEmail(ctx context.Context, arg CreateEmailParams) (Email
 		&i.BounceCount,
 		&i.IsCatchall,
 		&i.CreatedAt,
+		&i.UpdatedAt,
 	)
 	return i, err
 }
@@ -59,7 +60,7 @@ func (q *Queries) GetDomainByName(ctx context.Context, domain string) (Domain, e
 }
 
 const listUnverifiedEmails = `-- name: ListUnverifiedEmails :many
-SELECT id, email, person_id, verified_at, verification_method, bounce_count, is_catchall, created_at FROM emails
+SELECT id, email, person_id, verified_at, verification_method, bounce_count, is_catchall, created_at, updated_at FROM emails
 WHERE verified_at IS NULL
 ORDER BY created_at ASC
 LIMIT $1
@@ -83,6 +84,7 @@ func (q *Queries) ListUnverifiedEmails(ctx context.Context, limit int32) ([]Emai
 			&i.BounceCount,
 			&i.IsCatchall,
 			&i.CreatedAt,
+			&i.UpdatedAt,
 		); err != nil {
 			return nil, err
 		}

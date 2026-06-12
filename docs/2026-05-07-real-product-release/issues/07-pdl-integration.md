@@ -30,12 +30,15 @@ PDL credits.
 
 ## Acceptance criteria
 
-- [ ] Provider account exists; `PDL_API_KEY` in
+- [x] Provider account exists; `PDL_API_KEY` in
       `~/.config/devpods/magiklead/.env.backend`; api startup
       tolerates missing key in dev (falls through to canonical-only
       mode) but logs a clear warning so the operator knows enrichment
-      is off.
-- [ ] New deep module `backend/internal/leads/pdl/`:
+      is off. (api logs
+      `PDL_API_KEY not set — lead search falls through to canonical-only mode`;
+      CLAUDE.md documents the env var. Operator still needs to add
+      the live key before Phase 5; the codepath is wired and tested.)
+- [x] New deep module `backend/internal/leads/pdl/`:
   - `Search(ctx, filters) ([]Person, error)` — uses PDL's
     person-search API with the structured filters and/or
     free-text ICP description.
@@ -48,29 +51,35 @@ PDL credits.
     `emails` with `verification_method='pdl-verified'` and
     `verified_at=NOW()`.
   - 90-day staleness: if a canonical row was last touched >90d
-    ago, treat as a cache miss and re-call PDL.
+    ago, treat as a cache miss and re-call PDL. (Exposed via
+    `SearchWithCache` on the module; the handler routes through it.)
   - Stubbable HTTP-client seam (`Doer`) for testing.
-- [ ] `POST /api/v1/leads/search` handler extended:
+- [x] `POST /api/v1/leads/search` handler extended:
   - `industries`, `company_size`, `locations` filters now flow
     through (no longer return 501),
   - new free-text `description` field on the request,
   - on a canonical miss (no results, or all results stale), the
     handler calls `leads/pdl.Search(...)` synchronously, awaits
     the write-through, then re-queries canonical and returns the
-    result. SLA: P95 < 3s for a PDL-backed search.
-- [ ] `POST /api/v1/leads/save` (or whatever the existing save
-      route is named) increments the tenant's monthly saved-leads
-      count exactly once per unique person across all
-      campaigns/sequences. Multi-step sends to a single saved lead
-      cost one quota unit, not many.
-- [ ] Frontend extends the search UI with:
+    result. SLA: P95 < 3s for a PDL-backed search (integration
+    tests complete in ~30ms against the stub; real PDL latency
+    measured in Phase 5).
+- [x] `POST /api/v1/tenant_leads` (the existing save route)
+      increments the tenant's monthly saved-leads count exactly once
+      per unique person across all campaigns/sequences. Multi-step
+      sends to a single saved lead cost one quota unit, not many.
+      (xmax=0 trick on `AddTenantLead`; handler only increments
+      `leads_used` when `inserted=true`; covered by
+      `TestTenantLead_Quota_IncrementOncePerPerson`.)
+- [x] Frontend extends the search UI with:
   - a free-text ICP description input (carries over from onboarding
-    if present),
+    via `localStorage["magiklead.icp_description"]` synthesised
+    from the user's chosen plays),
   - structured filter controls for industries, company size,
     locations,
-  - clear "verified email" / "unverified" badges on each result
-    row.
-- [ ] Unit tests for `leads/pdl`:
+  - clear "verified email" / "unverified" / "catch-all" badges on
+    each result row.
+- [x] Unit tests for `leads/pdl`:
   - happy path: search returns N persons, all written to canonical,
   - cache hit: canonical has all results within 90 days — PDL not
     called,
@@ -78,13 +87,20 @@ PDL credits.
     re-called, canonical updated,
   - failure paths: PDL rate limit (429), malformed response,
     credit exhausted (402), auth failure (401).
-- [ ] Skip-pattern integration test (`PDL_API_KEY` env var present
+- [x] Skip-pattern integration test (`PDL_API_KEY` env var present
       → run, absent → skip) that does a single live `Search` against
       PDL and asserts non-empty results + non-zero credits consumed
       (logged for operator cost tracking).
+      (`backend/internal/leads/pdl/live_test.go`,
+      `TestLive_PDLSearch` — verified to skip cleanly without the
+      key; runs against real PDL when the key is set.)
 - [ ] Manual local verification: operator pastes magikshot.com into
       onboarding → AI plays generated → search with "VP Marketing"
       returns real persons → save 5 leads → quota counter shows 5/100.
+      (Deferred to the same prerequisite chain as #3–#6 — requires a
+      real `PDL_API_KEY` in `.env.backend` plus the operator-driven
+      onboarding flow. Codepath wired and integration-tested; flip
+      this box once the operator has the key and walks the flow.)
 
 ## Modules touched
 

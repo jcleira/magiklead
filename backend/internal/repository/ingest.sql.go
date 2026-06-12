@@ -120,7 +120,7 @@ func (q *Queries) CreateEvidence(ctx context.Context, arg CreateEvidenceParams) 
 const createOrganization = `-- name: CreateOrganization :one
 INSERT INTO organizations (canonical_name, primary_domain)
 VALUES ($1, $2)
-RETURNING id, canonical_name, primary_domain, created_at, updated_at
+RETURNING id, canonical_name, primary_domain, created_at, updated_at, industries, size_range
 `
 
 type CreateOrganizationParams struct {
@@ -137,6 +137,8 @@ func (q *Queries) CreateOrganization(ctx context.Context, arg CreateOrganization
 		&i.PrimaryDomain,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.Industries,
+		&i.SizeRange,
 	)
 	return i, err
 }
@@ -183,7 +185,7 @@ func (q *Queries) CreateOrganizationIdentifier(ctx context.Context, arg CreateOr
 const createPerson = `-- name: CreatePerson :one
 INSERT INTO persons (canonical_name, first_name, last_name, normalized_name)
 VALUES ($1, $2, $3, $4)
-RETURNING id, canonical_name, first_name, last_name, created_at, updated_at, normalized_name
+RETURNING id, canonical_name, first_name, last_name, created_at, updated_at, normalized_name, location, has_email
 `
 
 type CreatePersonParams struct {
@@ -209,6 +211,8 @@ func (q *Queries) CreatePerson(ctx context.Context, arg CreatePersonParams) (Per
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.NormalizedName,
+		&i.Location,
+		&i.HasEmail,
 	)
 	return i, err
 }
@@ -377,7 +381,7 @@ func (q *Queries) FindCurrentEmploymentByTitle(ctx context.Context, arg FindCurr
 }
 
 const findOrganizationByIdentifier = `-- name: FindOrganizationByIdentifier :one
-SELECT o.id, o.canonical_name, o.primary_domain, o.created_at, o.updated_at
+SELECT o.id, o.canonical_name, o.primary_domain, o.created_at, o.updated_at, o.industries, o.size_range
 FROM organizations o
 JOIN organization_identifiers oi ON oi.organization_id = o.id
 WHERE oi.identifier_type = $1 AND oi.identifier_value = $2
@@ -398,12 +402,14 @@ func (q *Queries) FindOrganizationByIdentifier(ctx context.Context, arg FindOrga
 		&i.PrimaryDomain,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.Industries,
+		&i.SizeRange,
 	)
 	return i, err
 }
 
 const findPersonByIdentifier = `-- name: FindPersonByIdentifier :one
-SELECT p.id, p.canonical_name, p.first_name, p.last_name, p.created_at, p.updated_at, p.normalized_name
+SELECT p.id, p.canonical_name, p.first_name, p.last_name, p.created_at, p.updated_at, p.normalized_name, p.location, p.has_email
 FROM persons p
 JOIN person_identifiers pi ON pi.person_id = p.id
 WHERE pi.identifier_type = $1 AND pi.identifier_value = $2
@@ -426,6 +432,8 @@ func (q *Queries) FindPersonByIdentifier(ctx context.Context, arg FindPersonById
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.NormalizedName,
+		&i.Location,
+		&i.HasEmail,
 	)
 	return i, err
 }

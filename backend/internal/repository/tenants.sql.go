@@ -50,6 +50,131 @@ func (q *Queries) CreateUserTenant(ctx context.Context, arg CreateUserTenantPara
 	return err
 }
 
+const deleteCampaignLeadsByTenant = `-- name: DeleteCampaignLeadsByTenant :exec
+DELETE FROM campaign_leads
+WHERE campaign_id IN (SELECT id FROM campaigns WHERE tenant_id = $1)
+`
+
+func (q *Queries) DeleteCampaignLeadsByTenant(ctx context.Context, tenantID pgtype.UUID) error {
+	_, err := q.db.Exec(ctx, deleteCampaignLeadsByTenant, tenantID)
+	return err
+}
+
+const deleteCampaignsByTenant = `-- name: DeleteCampaignsByTenant :exec
+DELETE FROM campaigns WHERE tenant_id = $1
+`
+
+func (q *Queries) DeleteCampaignsByTenant(ctx context.Context, tenantID pgtype.UUID) error {
+	_, err := q.db.Exec(ctx, deleteCampaignsByTenant, tenantID)
+	return err
+}
+
+const deleteEmailAccountsByTenant = `-- name: DeleteEmailAccountsByTenant :exec
+DELETE FROM email_accounts WHERE tenant_id = $1
+`
+
+func (q *Queries) DeleteEmailAccountsByTenant(ctx context.Context, tenantID pgtype.UUID) error {
+	_, err := q.db.Exec(ctx, deleteEmailAccountsByTenant, tenantID)
+	return err
+}
+
+const deleteEmailEventsByTenant = `-- name: DeleteEmailEventsByTenant :exec
+
+DELETE FROM email_events
+WHERE campaign_lead_id IN (
+    SELECT cl.id FROM campaign_leads cl
+    JOIN campaigns c ON c.id = cl.campaign_id
+    WHERE c.tenant_id = $1
+)
+`
+
+// The DeleteAccount* family below is the explicit FK-respecting
+// cascade used by the authenticated account-delete endpoint (issue
+// #11). The schema mixes ON DELETE CASCADE (tenant_leads, unsubscribes)
+// with plain FKs (campaigns, plays, gmail_accounts, subscriptions,
+// email_accounts, user_tenants). Rather than introduce a migration
+// altering every FK, the handler runs these in dependency order inside
+// one transaction — same pattern the privacy/erasure path already uses
+// for canonical-graph cleanup.
+//
+// Order assumed by callers:
+//  1. DeleteEmailEventsByTenant     -- email_events → campaign_leads → campaigns → tenant
+//  2. DeleteCampaignLeadsByTenant   -- campaign_leads → campaigns → tenant
+//  3. DeleteCampaignsByTenant       -- campaigns → tenant
+//  4. DeletePlaysByTenant
+//  5. DeleteGmailAccountsByTenant
+//  6. DeleteEmailAccountsByTenant
+//  7. DeleteSubscriptionByTenant
+//  8. DeleteUserTenantsByTenant
+//  9. DeleteTenantByID              -- cascades tenant_leads + unsubscribes
+//  10. DeleteUserByIDIfOrphan        -- only deletes the user if no other tenant memberships remain
+func (q *Queries) DeleteEmailEventsByTenant(ctx context.Context, tenantID pgtype.UUID) error {
+	_, err := q.db.Exec(ctx, deleteEmailEventsByTenant, tenantID)
+	return err
+}
+
+const deleteGmailAccountsByTenant = `-- name: DeleteGmailAccountsByTenant :exec
+DELETE FROM gmail_accounts WHERE tenant_id = $1
+`
+
+func (q *Queries) DeleteGmailAccountsByTenant(ctx context.Context, tenantID pgtype.UUID) error {
+	_, err := q.db.Exec(ctx, deleteGmailAccountsByTenant, tenantID)
+	return err
+}
+
+const deletePlaysByTenant = `-- name: DeletePlaysByTenant :exec
+DELETE FROM plays WHERE tenant_id = $1
+`
+
+func (q *Queries) DeletePlaysByTenant(ctx context.Context, tenantID pgtype.UUID) error {
+	_, err := q.db.Exec(ctx, deletePlaysByTenant, tenantID)
+	return err
+}
+
+const deleteSubscriptionByTenant = `-- name: DeleteSubscriptionByTenant :exec
+DELETE FROM subscriptions WHERE tenant_id = $1
+`
+
+func (q *Queries) DeleteSubscriptionByTenant(ctx context.Context, tenantID pgtype.UUID) error {
+	_, err := q.db.Exec(ctx, deleteSubscriptionByTenant, tenantID)
+	return err
+}
+
+const deleteTenantByID = `-- name: DeleteTenantByID :exec
+DELETE FROM tenants WHERE id = $1
+`
+
+func (q *Queries) DeleteTenantByID(ctx context.Context, id pgtype.UUID) error {
+	_, err := q.db.Exec(ctx, deleteTenantByID, id)
+	return err
+}
+
+const deleteUserByIDIfOrphan = `-- name: DeleteUserByIDIfOrphan :exec
+DELETE FROM users
+WHERE id = $1
+  AND NOT EXISTS (SELECT 1 FROM user_tenants WHERE user_id = $1)
+`
+
+// DeleteUserByIDIfOrphan removes a user row only if no user_tenants
+// entries remain. Defensive against the (out-of-scope) case where a
+// user belongs to more than one tenant — we never orphan the user
+// from a still-referenced tenant. Today every user owns exactly one
+// tenant, so the row deletes whenever the caller has just dropped
+// that user's only user_tenants link.
+func (q *Queries) DeleteUserByIDIfOrphan(ctx context.Context, id pgtype.UUID) error {
+	_, err := q.db.Exec(ctx, deleteUserByIDIfOrphan, id)
+	return err
+}
+
+const deleteUserTenantsByTenant = `-- name: DeleteUserTenantsByTenant :exec
+DELETE FROM user_tenants WHERE tenant_id = $1
+`
+
+func (q *Queries) DeleteUserTenantsByTenant(ctx context.Context, tenantID pgtype.UUID) error {
+	_, err := q.db.Exec(ctx, deleteUserTenantsByTenant, tenantID)
+	return err
+}
+
 const getTenant = `-- name: GetTenant :one
 SELECT id, name, domain, business_profile, created_at, updated_at FROM tenants WHERE id = $1
 `

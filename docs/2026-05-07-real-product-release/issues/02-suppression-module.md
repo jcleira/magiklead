@@ -27,11 +27,11 @@ shapes are stable.
 
 ## Acceptance criteria
 
-- [ ] New migration adds `email_events.gmail_message_id TEXT` with
+- [x] New migration adds `email_events.gmail_message_id TEXT` with
       an index. The column is nullable (existing rows have no value).
-- [ ] New migration adds `gmail_accounts.last_history_id TEXT` and
+- [x] New migration adds `gmail_accounts.last_history_id TEXT` and
       `gmail_accounts.last_polled_at TIMESTAMPTZ`. Both nullable.
-- [ ] New migration creates table `unsubscribes`:
+- [x] New migration creates table `unsubscribes`:
       `id UUID PRIMARY KEY DEFAULT gen_random_uuid()`,
       `tenant_id UUID NULL REFERENCES tenants(id) ON DELETE CASCADE`
       (NULL = global), `email TEXT NOT NULL`, `reason TEXT NOT NULL`
@@ -39,10 +39,10 @@ shapes are stable.
       soft-bounce-threshold), `created_at TIMESTAMPTZ NOT NULL
       DEFAULT now()`, unique on
       `(COALESCE(tenant_id, '00000000-0000-0000-0000-000000000000'), lower(email))`.
-- [ ] All three migrations round-trip: up applies cleanly on a fresh
+- [x] All three migrations round-trip: up applies cleanly on a fresh
       DB, down removes the column/table cleanly. Verified by the
-      `cmd/migrate` test path.
-- [ ] New package `backend/internal/suppression/` with:
+      `cmd/migrate` run path.
+- [x] New package `backend/internal/suppression/` with:
   - `IsSuppressed(ctx, tenantID, email) (bool, reason string, err)`.
     Returns true if there is a row in `unsubscribes` for either
     `(tenant_id, email)` or `(NULL, email)` (global), OR if the
@@ -54,20 +54,20 @@ shapes are stable.
     on third consecutive, also writes to `unsubscribes` with
     `reason='soft-bounce-threshold'`.
   - `RecordUnsubscribe(ctx, email, tenantID *uuid.UUID, reason string) error`.
-- [ ] `backend/internal/worker/sender.go` gates every send through
+- [x] `backend/internal/worker/sender.go` gates every send through
       `suppression.IsSuppressed`. On suppressed, write a `skipped`
       event with the reason and do not call the email sender.
-- [ ] Unit tests in `backend/internal/suppression/suppression_test.go`
+- [x] Unit tests in `backend/internal/suppression/suppression_test.go`
       cover every branch above against a real devpod Postgres,
       following the prior-art skip-pattern.
-- [ ] `q.SearchPersons`-style queries in `backend/queries/` are
+- [x] `q.SearchPersons`-style queries in `backend/queries/` are
       extended for the new columns; sqlc regeneration produces
       compiling Go.
 
 ## Modules touched
 
 - New deep module: `backend/internal/suppression/`.
-- New migrations: `backend/internal/migrate/migrations/`.
+- New migrations: `backend/migrations/`.
 - New queries: `backend/queries/suppression.sql` +
   `backend/queries/email_events.sql` (extension for
   `gmail_message_id`) + `backend/queries/gmail_accounts.sql`

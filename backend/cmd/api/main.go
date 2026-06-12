@@ -2,10 +2,13 @@ package main
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"log"
 	"net/http"
 	"os"
 	"os/signal"
+	"regexp"
 	"strings"
 	"syscall"
 	"time"
@@ -22,16 +25,34 @@ import (
 	"github.com/jcleira/magiklead/backend/internal/email"
 	gmailpkg "github.com/jcleira/magiklead/backend/internal/gmail"
 	"github.com/jcleira/magiklead/backend/internal/handler"
+	"github.com/jcleira/magiklead/backend/internal/leads/pdl"
 	"github.com/jcleira/magiklead/backend/internal/middleware"
 	"github.com/jcleira/magiklead/backend/internal/repository"
+	"github.com/jcleira/magiklead/backend/internal/suppression"
 )
+
+// clerkKeyPattern is Clerk's documented secret-key shape:
+// sk_test_ or sk_live_ followed by at least 20 alphanumerics. The
+// non-empty check upstream let `sk_test_YOUR_CLERK_SECRET_KEY_HERE`
+// pass startup and only fail later in request handling.
+var clerkKeyPattern = regexp.MustCompile(`^sk_(test|live)_[A-Za-z0-9]{20,}$`)
+
+func validateClerkKey(key string) error {
+	if key == "" {
+		return errors.New("CLERK_SECRET_KEY is required")
+	}
+	if !clerkKeyPattern.MatchString(key) {
+		return fmt.Errorf("CLERK_SECRET_KEY does not match Clerk's documented format (sk_test_… or sk_live_… followed by 20+ alphanumerics); got %q", key)
+	}
+	return nil
+}
 
 func main() {
 	_ = godotenv.Load()
 
 	clerkSecret := os.Getenv("CLERK_SECRET_KEY")
-	if clerkSecret == "" {
-		log.Fatal("CLERK_SECRET_KEY is required")
+	if err := validateClerkKey(clerkSecret); err != nil {
+		log.Fatal(err)
 	}
 	clerk.SetKey(clerkSecret)
 
@@ -46,6 +67,7 @@ func main() {
 	defer asynqClient.Close()
 
 	queries := repository.New(pool)
+	supp := suppression.New(pool)
 	aiClient := ai.NewClient(os.Getenv("ANTHROPIC_API_KEY"))
 
 	// Gmail service
@@ -56,13 +78,34 @@ func main() {
 	)
 	gmailSvc := gmailpkg.NewService(gmailOAuth, queries, os.Getenv("FRONTEND_URL"))
 
+	// Signs the Gmail OAuth `state` param (HS256). The callback is a
+	// public route — Google redirects there with no session — so the
+	// tenant + user binding rides in this signed state instead. Required
+	// only when Gmail OAuth is configured; pure-dev runs without
+	// GOOGLE_CLIENT_ID skip the connect flow entirely. Distinct from
+	// UNSUBSCRIBE_SIGNING_SECRET so the two token types can't be crossed.
+	gmailStateSecret := os.Getenv("GMAIL_OAUTH_STATE_SECRET")
+	if os.Getenv("GOOGLE_CLIENT_ID") != "" && gmailStateSecret == "" {
+		log.Fatal("GMAIL_OAUTH_STATE_SECRET is required when GOOGLE_CLIENT_ID is set (signs the Gmail OAuth state param)")
+	}
+
+	// PDL — real-data spine behind the canonical person graph (issue #7).
+	// The handler tolerates a nil module so dev runs without
+	// PDL_API_KEY still serve canonical-only results.
+	var pdlModule *pdl.Module
+	if pdlKey := os.Getenv("PDL_API_KEY"); pdlKey != "" {
+		pdlModule = pdl.New(pool, pdlKey, nil)
+	} else {
+		log.Print("PDL_API_KEY not set — lead search falls through to canonical-only mode")
+	}
+
 	// Handlers
 	websiteH := handler.NewWebsiteHandler(aiClient, queries)
 	playH := handler.NewPlayHandler(aiClient, queries)
-	campaignH := handler.NewCampaignHandler(queries)
+	campaignH := handler.NewCampaignHandler(queries, supp)
 	leadH := handler.NewLeadHandler(queries, asynqClient)
-	leadSearchH := handler.NewLeadSearchHandler(queries)
-	gmailH := handler.NewGmailHandler(gmailSvc, queries)
+	leadSearchH := handler.NewLeadSearchHandler(queries, pdlModule)
+	gmailH := handler.NewGmailHandler(gmailSvc, queries, []byte(gmailStateSecret), os.Getenv("FRONTEND_URL"))
 	sequenceH := handler.NewSequenceHandler(aiClient, queries)
 	emailAccH := handler.NewEmailAccountHandler(queries)
 	deliverH := handler.NewDeliverabilityHandler()
@@ -72,6 +115,17 @@ func main() {
 	systemMailer := email.NewFromEnv()
 	privacyH := handler.NewPrivacyHandler(queries, pool, systemMailer, os.Getenv("FRONTEND_URL"))
 	tenantLeadH := handler.NewTenantLeadHandler(queries)
+	settingsH := handler.NewSettingsHandler(queries)
+	accountH := handler.NewAccountHandler(queries, pool, os.Getenv("CLERK_SECRET_KEY"))
+	// Public unsubscribe (issue #6) — recipients clicking from their
+	// inbox have no Clerk session; authentication is the signed token.
+	// Same secret is consumed by the worker when minting tokens, so
+	// the worker and api MUST share UNSUBSCRIBE_SIGNING_SECRET.
+	unsubscribeSecret := os.Getenv("UNSUBSCRIBE_SIGNING_SECRET")
+	if unsubscribeSecret == "" {
+		log.Fatal("UNSUBSCRIBE_SIGNING_SECRET is required (must match the worker's value)")
+	}
+	publicUnsubH := handler.NewPublicUnsubscribeHandler([]byte(unsubscribeSecret), supp)
 	adminEmails := strings.Split(os.Getenv("ADMIN_EMAILS"), ",")
 
 	r := chi.NewRouter()
@@ -103,6 +157,19 @@ func main() {
 		r.Post("/privacy/erasure/request", privacyH.RequestErasure)
 		r.Post("/privacy/erasure/confirm", privacyH.ConfirmErasure)
 
+		// RFC 8058 one-click unsubscribe (issue #6). POST is the
+		// one-click action; GET catches email-client pre-fetches
+		// and hand-typed link visits.
+		r.Post("/public/unsubscribe", publicUnsubH.Handle)
+		r.Get("/public/unsubscribe", publicUnsubH.Handle)
+
+		// Gmail OAuth callback (public): Google redirects the user's
+		// browser here with ?code&state and no Authorization header, so
+		// it cannot sit behind ClerkAuth. The tenant + user binding
+		// rides in the signed `state` minted by the protected
+		// /gmail/auth-url; Callback verifies it.
+		r.Get("/gmail/callback", gmailH.Callback)
+
 		// Protected routes
 		r.Group(func(r chi.Router) {
 			r.Use(middleware.ClerkAuth)
@@ -121,10 +188,12 @@ func main() {
 			r.Post("/campaigns", campaignH.Create)
 			r.Get("/campaigns", campaignH.List)
 			r.Get("/campaigns/{id}", campaignH.Get)
+			r.Get("/campaigns/{id}/metrics", campaignH.Metrics)
 			r.Post("/campaigns/{id}/start", campaignH.Start)
 			r.Post("/campaigns/{id}/pause", campaignH.Pause)
 			r.Get("/campaigns/{id}/leads", campaignH.ListLeads)
 			r.Post("/campaigns/{id}/leads", campaignH.AddLeads)
+			r.Post("/campaigns/{id}/leads/{lead_id}/reengage", campaignH.Reengage)
 
 			// Leads
 			r.Post("/leads/discover", leadH.Discover)
@@ -141,9 +210,10 @@ func main() {
 			// Sequences
 			r.Post("/sequences/generate", sequenceH.Generate)
 
-			// Gmail (OAuth)
+			// Gmail (OAuth). The callback is public (see above); minting
+			// the signed state requires the Clerk session, so auth-url
+			// stays here.
 			r.Get("/gmail/auth-url", gmailH.AuthURL)
-			r.Get("/gmail/callback", gmailH.Callback)
 			r.Get("/gmail/accounts", gmailH.ListAccounts)
 			r.Delete("/gmail/accounts/{id}", gmailH.DeleteAccount)
 
@@ -151,6 +221,15 @@ func main() {
 			r.Post("/email-accounts/smtp", emailAccH.ConnectSMTP)
 			r.Get("/email-accounts", emailAccH.List)
 			r.Delete("/email-accounts/{id}", emailAccH.Delete)
+
+			// Settings — consolidated tenant/plan/usage/email-accounts.
+			r.Get("/settings", settingsH.Get)
+
+			// Account self-service (issue #11): GDPR-adjacent export +
+			// delete. Both are tenant-scoped behind ClerkAuth; the
+			// handler walks the cascade in dependency order inside a tx.
+			r.Post("/account/export", accountH.Export)
+			r.Delete("/account", accountH.Delete)
 
 			// Deliverability
 			r.Get("/deliverability/check", deliverH.CheckDomain)

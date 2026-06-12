@@ -139,6 +139,42 @@ func (q *Queries) IncrementSequencesUsed(ctx context.Context, arg IncrementSeque
 	return err
 }
 
+const linkCheckoutSubscription = `-- name: LinkCheckoutSubscription :exec
+UPDATE subscriptions
+SET plan = $2, leads_limit = $3, sequences_limit = $4,
+    stripe_customer_id = $5,
+    stripe_subscription_id = $6
+WHERE tenant_id = $1
+`
+
+type LinkCheckoutSubscriptionParams struct {
+	TenantID             pgtype.UUID `json:"tenant_id"`
+	Plan                 string      `json:"plan"`
+	LeadsLimit           int32       `json:"leads_limit"`
+	SequencesLimit       int32       `json:"sequences_limit"`
+	StripeCustomerID     pgtype.Text `json:"stripe_customer_id"`
+	StripeSubscriptionID pgtype.Text `json:"stripe_subscription_id"`
+}
+
+// LinkCheckoutSubscription runs from the checkout.session.completed
+// webhook handler. It writes the new plan + limits + stripe IDs in one
+// shot, identified by tenant_id (which we receive in session metadata).
+// Period dates are filled in by the subsequent
+// customer.subscription.{created,updated} event via
+// UpdateSubscriptionByStripeID; setting stripe_subscription_id here is
+// what lets that follow-up update find the row.
+func (q *Queries) LinkCheckoutSubscription(ctx context.Context, arg LinkCheckoutSubscriptionParams) error {
+	_, err := q.db.Exec(ctx, linkCheckoutSubscription,
+		arg.TenantID,
+		arg.Plan,
+		arg.LeadsLimit,
+		arg.SequencesLimit,
+		arg.StripeCustomerID,
+		arg.StripeSubscriptionID,
+	)
+	return err
+}
+
 const resetUsageCounts = `-- name: ResetUsageCounts :exec
 UPDATE subscriptions SET leads_used = 0, sequences_used = 0
 WHERE current_period_end < NOW()

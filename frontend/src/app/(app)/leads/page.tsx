@@ -65,32 +65,68 @@ function TabButton({
 
 // ---- Search tab ------------------------------------------------------------
 
+const COMPANY_SIZE_OPTIONS = [
+  { value: "", label: "Any size" },
+  { value: "1-10", label: "1–10" },
+  { value: "11-50", label: "11–50" },
+  { value: "51-200", label: "51–200" },
+  { value: "201-500", label: "201–500" },
+  { value: "501-1000", label: "501–1,000" },
+  { value: "1001-5000", label: "1,001–5,000" },
+  { value: "5001-10000", label: "5,001–10,000" },
+  { value: "10001+", label: "10,001+" },
+];
+
 function SearchTab() {
   const { searchLeads, saveLead } = useLeadsApi();
   const [titlesInput, setTitlesInput] = useState("");
+  const [industriesInput, setIndustriesInput] = useState("");
+  const [locationsInput, setLocationsInput] = useState("");
+  const [companySize, setCompanySize] = useState("");
+  const [description, setDescription] = useState("");
   const [withEmail, setWithEmail] = useState(false);
   const [offset, setOffset] = useState(0);
   const [results, setResults] = useState<LeadSearchResult[]>([]);
+  const [pdlCalled, setPdlCalled] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [savedIds, setSavedIds] = useState<Set<string>>(new Set());
   const [savingId, setSavingId] = useState<string | null>(null);
 
-  const titles = useMemo(
-    () =>
-      titlesInput
-        .split(",")
-        .map((s) => s.trim())
-        .filter(Boolean),
-    [titlesInput]
-  );
-
-  // Debounce title input so every keystroke doesn't fire a search.
-  const [debouncedTitles, setDebouncedTitles] = useState<string[]>([]);
+  // On first mount, seed the description from the onboarding-captured
+  // ICP description (if the user just came through onboarding); the
+  // key is persisted to localStorage by the onboarding flow.
   useEffect(() => {
-    const t = setTimeout(() => setDebouncedTitles(titles), 350);
+    if (typeof window === "undefined") return;
+    const seeded = window.localStorage.getItem("magiklead.icp_description");
+    if (seeded && !description) {
+      setDescription(seeded);
+    }
+    // Intentionally one-shot — only on mount.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const titles = useMemo(() => splitCSV(titlesInput), [titlesInput]);
+  const industries = useMemo(
+    () => splitCSV(industriesInput),
+    [industriesInput]
+  );
+  const locations = useMemo(() => splitCSV(locationsInput), [locationsInput]);
+
+  // Debounce input so every keystroke doesn't fire a search.
+  const [debouncedTitles, setDebouncedTitles] = useState<string[]>([]);
+  const [debouncedIndustries, setDebouncedIndustries] = useState<string[]>([]);
+  const [debouncedLocations, setDebouncedLocations] = useState<string[]>([]);
+  const [debouncedDescription, setDebouncedDescription] = useState("");
+  useEffect(() => {
+    const t = setTimeout(() => {
+      setDebouncedTitles(titles);
+      setDebouncedIndustries(industries);
+      setDebouncedLocations(locations);
+      setDebouncedDescription(description.trim());
+    }, 350);
     return () => clearTimeout(t);
-  }, [titles]);
+  }, [titles, industries, locations, description]);
 
   const runSearch = useCallback(async () => {
     setLoading(true);
@@ -98,18 +134,35 @@ function SearchTab() {
     try {
       const res = await searchLeads({
         titles: debouncedTitles.length ? debouncedTitles : undefined,
+        industries: debouncedIndustries.length
+          ? debouncedIndustries
+          : undefined,
+        locations: debouncedLocations.length ? debouncedLocations : undefined,
+        company_size: companySize || undefined,
+        description: debouncedDescription || undefined,
         with_email: withEmail,
         limit: PAGE_SIZE,
         offset,
       });
       setResults(res.results);
+      setPdlCalled(Boolean(res.pdl_called));
     } catch (e) {
       setError((e as Error).message);
       setResults([]);
+      setPdlCalled(false);
     } finally {
       setLoading(false);
     }
-  }, [searchLeads, debouncedTitles, withEmail, offset]);
+  }, [
+    searchLeads,
+    debouncedTitles,
+    debouncedIndustries,
+    debouncedLocations,
+    companySize,
+    debouncedDescription,
+    withEmail,
+    offset,
+  ]);
 
   useEffect(() => {
     void runSearch();
@@ -118,7 +171,14 @@ function SearchTab() {
   // Reset pagination when filters change.
   useEffect(() => {
     setOffset(0);
-  }, [debouncedTitles, withEmail]);
+  }, [
+    debouncedTitles,
+    debouncedIndustries,
+    debouncedLocations,
+    companySize,
+    debouncedDescription,
+    withEmail,
+  ]);
 
   async function handleSave(personId: string) {
     setSavingId(personId);
@@ -138,29 +198,94 @@ function SearchTab() {
 
   return (
     <div>
-      <div className="flex flex-wrap items-end gap-4">
+      <div className="space-y-4">
         <label className="flex flex-col gap-1">
           <span className="text-xs font-medium text-slate-500">
-            Titles (comma-separated)
+            ICP description (free text)
           </span>
-          <input
-            type="text"
-            value={titlesInput}
-            onChange={(e) => setTitlesInput(e.target.value)}
-            placeholder="VP Sales, Head of Growth"
-            className="min-w-80 rounded-lg border border-slate-300 px-4 py-2 text-sm focus:border-slate-500 focus:outline-none focus:ring-1 focus:ring-slate-500"
+          <textarea
+            value={description}
+            onChange={(e) => setDescription(e.target.value)}
+            rows={2}
+            placeholder="Heads of Marketing at European B2B SaaS, 50–500 employees"
+            className="rounded-lg border border-slate-300 px-4 py-2 text-sm focus:border-slate-500 focus:outline-none focus:ring-1 focus:ring-slate-500"
           />
         </label>
-        <label className="flex items-center gap-2 pb-2 text-sm text-slate-700">
-          <input
-            type="checkbox"
-            checked={withEmail}
-            onChange={(e) => setWithEmail(e.target.checked)}
-            className="h-4 w-4 rounded border-slate-300"
-          />
-          With verified email
-        </label>
+
+        <div className="flex flex-wrap items-end gap-4">
+          <label className="flex flex-col gap-1">
+            <span className="text-xs font-medium text-slate-500">
+              Titles (comma-separated)
+            </span>
+            <input
+              type="text"
+              value={titlesInput}
+              onChange={(e) => setTitlesInput(e.target.value)}
+              placeholder="VP Sales, Head of Growth"
+              className="min-w-80 rounded-lg border border-slate-300 px-4 py-2 text-sm focus:border-slate-500 focus:outline-none focus:ring-1 focus:ring-slate-500"
+            />
+          </label>
+
+          <label className="flex flex-col gap-1">
+            <span className="text-xs font-medium text-slate-500">
+              Industries (comma-separated)
+            </span>
+            <input
+              type="text"
+              value={industriesInput}
+              onChange={(e) => setIndustriesInput(e.target.value)}
+              placeholder="software, fintech"
+              className="min-w-64 rounded-lg border border-slate-300 px-4 py-2 text-sm focus:border-slate-500 focus:outline-none focus:ring-1 focus:ring-slate-500"
+            />
+          </label>
+
+          <label className="flex flex-col gap-1">
+            <span className="text-xs font-medium text-slate-500">
+              Company size
+            </span>
+            <select
+              value={companySize}
+              onChange={(e) => setCompanySize(e.target.value)}
+              className="rounded-lg border border-slate-300 bg-white px-4 py-2 text-sm focus:border-slate-500 focus:outline-none focus:ring-1 focus:ring-slate-500"
+            >
+              {COMPANY_SIZE_OPTIONS.map((opt) => (
+                <option key={opt.value} value={opt.value}>
+                  {opt.label}
+                </option>
+              ))}
+            </select>
+          </label>
+
+          <label className="flex flex-col gap-1">
+            <span className="text-xs font-medium text-slate-500">
+              Locations (comma-separated)
+            </span>
+            <input
+              type="text"
+              value={locationsInput}
+              onChange={(e) => setLocationsInput(e.target.value)}
+              placeholder="Berlin, Madrid"
+              className="min-w-64 rounded-lg border border-slate-300 px-4 py-2 text-sm focus:border-slate-500 focus:outline-none focus:ring-1 focus:ring-slate-500"
+            />
+          </label>
+
+          <label className="flex items-center gap-2 pb-2 text-sm text-slate-700">
+            <input
+              type="checkbox"
+              checked={withEmail}
+              onChange={(e) => setWithEmail(e.target.checked)}
+              className="h-4 w-4 rounded border-slate-300"
+            />
+            With verified email
+          </label>
+        </div>
       </div>
+
+      {pdlCalled && (
+        <div className="mt-3 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-700">
+          Live data fetched from People Data Labs and cached for future searches.
+        </div>
+      )}
 
       {error && (
         <div className="mt-4 rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
@@ -219,24 +344,13 @@ function SearchTab() {
                       </td>
                       <td className="py-3 pr-4 text-sm">
                         {r.email ? (
-                          <span
-                            className={
-                              r.email_verified
-                                ? "text-emerald-700"
-                                : r.email_is_catchall
-                                ? "text-amber-700"
-                                : "text-slate-500"
-                            }
-                            title={
-                              r.email_verified
-                                ? "Verified"
-                                : r.email_is_catchall
-                                ? "Catch-all domain"
-                                : "Unverified"
-                            }
-                          >
-                            {r.email}
-                          </span>
+                          <div className="flex items-center gap-2">
+                            <span className="text-slate-700">{r.email}</span>
+                            <EmailBadge
+                              verified={r.email_verified}
+                              catchall={r.email_is_catchall}
+                            />
+                          </div>
                         ) : (
                           <span className="text-slate-400">—</span>
                         )}
@@ -286,6 +400,50 @@ function SearchTab() {
       )}
     </div>
   );
+}
+
+function EmailBadge({
+  verified,
+  catchall,
+}: {
+  verified: boolean;
+  catchall: boolean;
+}) {
+  if (verified) {
+    return (
+      <span
+        className="rounded-full bg-emerald-50 px-2 py-0.5 text-xs font-medium text-emerald-700 ring-1 ring-inset ring-emerald-200"
+        title="Verified by PDL or SMTP probe"
+      >
+        Verified
+      </span>
+    );
+  }
+  if (catchall) {
+    return (
+      <span
+        className="rounded-full bg-amber-50 px-2 py-0.5 text-xs font-medium text-amber-700 ring-1 ring-inset ring-amber-200"
+        title="Catch-all domain; deliverability unknown"
+      >
+        Catch-all
+      </span>
+    );
+  }
+  return (
+    <span
+      className="rounded-full bg-slate-100 px-2 py-0.5 text-xs font-medium text-slate-600 ring-1 ring-inset ring-slate-200"
+      title="Not yet verified"
+    >
+      Unverified
+    </span>
+  );
+}
+
+function splitCSV(s: string): string[] {
+  return s
+    .split(",")
+    .map((x) => x.trim())
+    .filter(Boolean);
 }
 
 // ---- Saved tab -------------------------------------------------------------

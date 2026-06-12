@@ -14,7 +14,7 @@ import (
 const createGmailAccount = `-- name: CreateGmailAccount :one
 INSERT INTO gmail_accounts (tenant_id, user_id, email, access_token, refresh_token, token_expiry)
 VALUES ($1, $2, $3, $4, $5, $6)
-RETURNING id, tenant_id, user_id, email, access_token, refresh_token, token_expiry, daily_sent_count, daily_sent_reset_at, created_at
+RETURNING id, tenant_id, user_id, email, access_token, refresh_token, token_expiry, daily_sent_count, daily_sent_reset_at, created_at, last_history_id, last_polled_at
 `
 
 type CreateGmailAccountParams struct {
@@ -47,6 +47,8 @@ func (q *Queries) CreateGmailAccount(ctx context.Context, arg CreateGmailAccount
 		&i.DailySentCount,
 		&i.DailySentResetAt,
 		&i.CreatedAt,
+		&i.LastHistoryID,
+		&i.LastPolledAt,
 	)
 	return i, err
 }
@@ -66,7 +68,7 @@ func (q *Queries) DeleteGmailAccount(ctx context.Context, arg DeleteGmailAccount
 }
 
 const getGmailAccount = `-- name: GetGmailAccount :one
-SELECT id, tenant_id, user_id, email, access_token, refresh_token, token_expiry, daily_sent_count, daily_sent_reset_at, created_at FROM gmail_accounts WHERE id = $1 AND tenant_id = $2
+SELECT id, tenant_id, user_id, email, access_token, refresh_token, token_expiry, daily_sent_count, daily_sent_reset_at, created_at, last_history_id, last_polled_at FROM gmail_accounts WHERE id = $1 AND tenant_id = $2
 `
 
 type GetGmailAccountParams struct {
@@ -88,6 +90,8 @@ func (q *Queries) GetGmailAccount(ctx context.Context, arg GetGmailAccountParams
 		&i.DailySentCount,
 		&i.DailySentResetAt,
 		&i.CreatedAt,
+		&i.LastHistoryID,
+		&i.LastPolledAt,
 	)
 	return i, err
 }
@@ -102,7 +106,7 @@ func (q *Queries) IncrementDailySent(ctx context.Context, id pgtype.UUID) error 
 }
 
 const listGmailAccounts = `-- name: ListGmailAccounts :many
-SELECT id, tenant_id, user_id, email, access_token, refresh_token, token_expiry, daily_sent_count, daily_sent_reset_at, created_at FROM gmail_accounts WHERE tenant_id = $1
+SELECT id, tenant_id, user_id, email, access_token, refresh_token, token_expiry, daily_sent_count, daily_sent_reset_at, created_at, last_history_id, last_polled_at FROM gmail_accounts WHERE tenant_id = $1
 `
 
 func (q *Queries) ListGmailAccounts(ctx context.Context, tenantID pgtype.UUID) ([]GmailAccount, error) {
@@ -125,6 +129,50 @@ func (q *Queries) ListGmailAccounts(ctx context.Context, tenantID pgtype.UUID) (
 			&i.DailySentCount,
 			&i.DailySentResetAt,
 			&i.CreatedAt,
+			&i.LastHistoryID,
+			&i.LastPolledAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listGmailAccountsForPolling = `-- name: ListGmailAccountsForPolling :many
+SELECT id, tenant_id, user_id, email, access_token, refresh_token, token_expiry, daily_sent_count, daily_sent_reset_at, created_at, last_history_id, last_polled_at FROM gmail_accounts ORDER BY id
+`
+
+// ListGmailAccountsForPolling returns every connected Gmail account
+// across all tenants — the reply-detection poller (issue #4) walks
+// this set on each 2-minute tick. Ordering by id keeps the rotation
+// through accounts deterministic across ticks so a slow account
+// doesn't block the same neighbours each cycle.
+func (q *Queries) ListGmailAccountsForPolling(ctx context.Context) ([]GmailAccount, error) {
+	rows, err := q.db.Query(ctx, listGmailAccountsForPolling)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []GmailAccount{}
+	for rows.Next() {
+		var i GmailAccount
+		if err := rows.Scan(
+			&i.ID,
+			&i.TenantID,
+			&i.UserID,
+			&i.Email,
+			&i.AccessToken,
+			&i.RefreshToken,
+			&i.TokenExpiry,
+			&i.DailySentCount,
+			&i.DailySentResetAt,
+			&i.CreatedAt,
+			&i.LastHistoryID,
+			&i.LastPolledAt,
 		); err != nil {
 			return nil, err
 		}
@@ -143,6 +191,23 @@ WHERE daily_sent_reset_at < CURRENT_DATE
 
 func (q *Queries) ResetDailySentCounts(ctx context.Context) error {
 	_, err := q.db.Exec(ctx, resetDailySentCounts)
+	return err
+}
+
+const updateGmailAccountCursor = `-- name: UpdateGmailAccountCursor :exec
+UPDATE gmail_accounts
+SET last_history_id = $2, last_polled_at = $3
+WHERE id = $1
+`
+
+type UpdateGmailAccountCursorParams struct {
+	ID            pgtype.UUID        `json:"id"`
+	LastHistoryID pgtype.Text        `json:"last_history_id"`
+	LastPolledAt  pgtype.Timestamptz `json:"last_polled_at"`
+}
+
+func (q *Queries) UpdateGmailAccountCursor(ctx context.Context, arg UpdateGmailAccountCursorParams) error {
+	_, err := q.db.Exec(ctx, updateGmailAccountCursor, arg.ID, arg.LastHistoryID, arg.LastPolledAt)
 	return err
 }
 

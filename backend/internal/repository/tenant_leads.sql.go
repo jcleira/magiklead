@@ -19,7 +19,7 @@ ON CONFLICT (tenant_id, person_id) DO UPDATE
     SET status           = COALESCE(EXCLUDED.status, tenant_leads.status),
         notes            = COALESCE(EXCLUDED.notes, tenant_leads.notes),
         added_by_user_id = COALESCE(EXCLUDED.added_by_user_id, tenant_leads.added_by_user_id)
-RETURNING tenant_id, person_id, status, notes, added_at, added_by_user_id
+RETURNING tenant_id, person_id, status, notes, added_at, added_by_user_id, (xmax = 0) AS inserted
 `
 
 type AddTenantLeadParams struct {
@@ -30,8 +30,24 @@ type AddTenantLeadParams struct {
 	Status        pgtype.Text `json:"status"`
 }
 
+type AddTenantLeadRow struct {
+	TenantID      pgtype.UUID        `json:"tenant_id"`
+	PersonID      pgtype.UUID        `json:"person_id"`
+	Status        string             `json:"status"`
+	Notes         pgtype.Text        `json:"notes"`
+	AddedAt       pgtype.Timestamptz `json:"added_at"`
+	AddedByUserID pgtype.UUID        `json:"added_by_user_id"`
+	Inserted      bool               `json:"inserted"`
+}
+
 // tenant_leads — per-tenant association with canonical persons.
-func (q *Queries) AddTenantLead(ctx context.Context, arg AddTenantLeadParams) (TenantLead, error) {
+// AddTenantLead saves (or refreshes) a canonical person as this
+// tenant's lead. The `inserted` flag (Postgres xmax=0 trick) is TRUE
+// only when this row was a fresh INSERT — the handler reads it to
+// gate the leads_used quota increment so re-saving the same person
+// across campaigns doesn't double-count against the tenant's monthly
+// quota.
+func (q *Queries) AddTenantLead(ctx context.Context, arg AddTenantLeadParams) (AddTenantLeadRow, error) {
 	row := q.db.QueryRow(ctx, addTenantLead,
 		arg.TenantID,
 		arg.PersonID,
@@ -39,7 +55,7 @@ func (q *Queries) AddTenantLead(ctx context.Context, arg AddTenantLeadParams) (T
 		arg.AddedByUserID,
 		arg.Status,
 	)
-	var i TenantLead
+	var i AddTenantLeadRow
 	err := row.Scan(
 		&i.TenantID,
 		&i.PersonID,
@@ -47,6 +63,7 @@ func (q *Queries) AddTenantLead(ctx context.Context, arg AddTenantLeadParams) (T
 		&i.Notes,
 		&i.AddedAt,
 		&i.AddedByUserID,
+		&i.Inserted,
 	)
 	return i, err
 }
@@ -150,6 +167,42 @@ func (q *Queries) ListTenantLeads(ctx context.Context, arg ListTenantLeadsParams
 			&i.CanonicalName,
 			&i.FirstName,
 			&i.LastName,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listTenantLeadsForExport = `-- name: ListTenantLeadsForExport :many
+SELECT tenant_id, person_id, status, notes, added_at, added_by_user_id FROM tenant_leads
+WHERE tenant_id = $1
+ORDER BY added_at
+`
+
+// ListTenantLeadsForExport dumps every saved-lead row for a tenant,
+// raw (no pagination, no JOIN). Used by the GDPR account-export
+// endpoint (issue #11) to write tenant_leads.json.
+func (q *Queries) ListTenantLeadsForExport(ctx context.Context, tenantID pgtype.UUID) ([]TenantLead, error) {
+	rows, err := q.db.Query(ctx, listTenantLeadsForExport, tenantID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []TenantLead{}
+	for rows.Next() {
+		var i TenantLead
+		if err := rows.Scan(
+			&i.TenantID,
+			&i.PersonID,
+			&i.Status,
+			&i.Notes,
+			&i.AddedAt,
+			&i.AddedByUserID,
 		); err != nil {
 			return nil, err
 		}
