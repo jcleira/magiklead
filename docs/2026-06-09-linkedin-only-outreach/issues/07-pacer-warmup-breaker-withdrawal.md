@@ -25,17 +25,17 @@ End-to-end:
 
 ## Acceptance criteria
 
-- [ ] Pacer unit tests across the warmup curve: day-of-warmup →
+- [x] Pacer unit tests across the warmup curve: day-of-warmup →
   allowed/day matches the ramp (≈8 → 20 over wk1 → wk4), capped by
   100/week; injected clock. Pure logic.
-- [ ] Acceptance breaker: with counters showing <20% trailing-7-day
+- [x] Acceptance breaker: with counters showing <20% trailing-7-day
   acceptance, the pacer returns 0 and the account is marked paused; ≥20%
   resumes. Unit-tested.
-- [ ] Withdrawal: a lead `awaiting_accept` with an invite older than
+- [x] Withdrawal: a lead `awaiting_accept` with an invite older than
   21 days is withdrawn (Unipile cancel-invitation called — assert
   against the stub), lead → `not_accepted`, a `withdrawn` event written.
   Assert via DB.
-- [ ] The acceptance-rate signal is computed from `linkedin_events`
+- [x] The acceptance-rate signal is computed from `linkedin_events`
   (`invite_sent` vs `accepted`) over 7 days.
 
 ## Modules touched

@@ -27,30 +27,30 @@ End-to-end:
 
 ## Acceptance criteria
 
-- [ ] Migration creates `linkedin_accounts` (id, tenant_id,
+- [x] Migration creates `linkedin_accounts` (id, tenant_id,
   unipile_account_id, status, warmup_started_at, weekly_invite_count,
   weekly_window_started_at, daily_invite_count, daily_reset_at,
   acceptance_rate, last_error, created_at). Status ∈
   connecting|active|warming|restricted|disconnected.
-- [ ] `GET /api/v1/linkedin/auth-url` (Clerk-auth + tenant) returns a
+- [x] `GET /api/v1/linkedin/auth-url` (Clerk-auth + tenant) returns a
   Unipile hosted-auth URL; assert via the stubbed Unipile `Doer` that a
   signed `pkg/jwt` token (tenant_id+user_id, short TTL) is sent and
   `jwt.Decode` round-trips it.
-- [ ] `POST /api/v1/webhooks/unipile` is public, verifies the
+- [x] `POST /api/v1/webhooks/unipile` is public, verifies the
   `UNIPILE_WEBHOOK_SECRET` signature (503 if unconfigured, 401 on bad
   sig — mirror the Clerk handler), and is idempotent (replaying the same
   `account.connected` upserts one row).
-- [ ] A valid `account.connected` webhook inserts a `linkedin_accounts`
+- [x] A valid `account.connected` webhook inserts a `linkedin_accounts`
   row with status `active` for the bound tenant; assert via DB.
-- [ ] `GET /api/v1/linkedin/accounts` lists the tenant's accounts with
+- [x] `GET /api/v1/linkedin/accounts` lists the tenant's accounts with
   status; `DELETE /api/v1/linkedin/accounts/{id}` removes one (calls
   Unipile disconnect via the stub).
-- [ ] On the free plan, a second connect attempt returns a 4xx capacity
+- [x] On the free plan, a second connect attempt returns a 4xx capacity
   error and writes no second row; assert via DB.
-- [ ] Settings UI: "Connect LinkedIn" gated behind a risk-consent
+- [x] Settings UI: "Connect LinkedIn" gated behind a risk-consent
   checkbox; connected accounts render with status; a disconnect control.
   Playwright covers the happy path against a stubbed backend.
-- [ ] `UNIPILE_API_KEY` absent → routes degrade like PDL (feature
+- [x] `UNIPILE_API_KEY` absent → routes degrade like PDL (feature
   disabled, no fatal). Documented in CLAUDE.md devpod secrets.
 
 ## Modules touched

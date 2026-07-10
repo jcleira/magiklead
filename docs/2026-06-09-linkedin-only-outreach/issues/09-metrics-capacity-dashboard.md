@@ -19,13 +19,13 @@ End-to-end:
 
 ## Acceptance criteria
 
-- [ ] A metrics endpoint returns per-campaign counts/rates derived from
+- [x] A metrics endpoint returns per-campaign counts/rates derived from
   `linkedin_events`; assert the numbers against a seeded event set via
   DB + API.
-- [ ] A capacity endpoint/value returns remaining invites this week for
+- [x] A capacity endpoint/value returns remaining invites this week for
   the connected account (cap − used, respecting warmup); assert against
   seeded counters.
-- [ ] UI renders per-campaign acceptance rate + reply rate and the
+- [x] UI renders per-campaign acceptance rate + reply rate and the
   remaining-capacity indicator (Playwright happy path).
 
 ## Modules touched

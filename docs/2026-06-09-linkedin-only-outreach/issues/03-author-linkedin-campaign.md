@@ -25,16 +25,16 @@ End-to-end:
 
 ## Acceptance criteria
 
-- [ ] Migration adds `campaigns.channel` defaulting to `email`; existing
+- [x] Migration adds `campaigns.channel` defaulting to `email`; existing
   campaigns unaffected.
-- [ ] Creating a LinkedIn campaign persists `channel='linkedin'` and a
+- [x] Creating a LinkedIn campaign persists `channel='linkedin'` and a
   `linkedin_sequence` with a step-0 note + ≥1 DM step; the 300-char note
   limit is validated (4xx on overflow). Assert via API + DB.
-- [ ] Adding saved prospects creates `campaign_leads` rows with
+- [x] Adding saved prospects creates `campaign_leads` rows with
   `person_id`, `status='queued'`; assert via DB.
-- [ ] The personalization renderer fills first_name/company/title for
+- [x] The personalization renderer fills first_name/company/title for
   the LinkedIn step shape (unit test).
-- [ ] Sequence-builder UI: add/edit/reorder the note + DM steps with
+- [x] Sequence-builder UI: add/edit/reorder the note + DM steps with
   delays (Playwright happy path).
 
 ## Modules touched

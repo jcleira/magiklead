@@ -22,17 +22,17 @@ End-to-end:
 
 ## Acceptance criteria
 
-- [ ] An `account.disconnected`/restricted webhook flips
+- [x] An `account.disconnected`/restricted webhook flips
   `linkedin_accounts.status` + sets `last_error`; idempotent; assert via
   DB.
-- [ ] A send returning the `restricted` sentinel flips the account to
+- [x] A send returning the `restricted` sentinel flips the account to
   `restricted` and writes a `failed` event without advancing the lead;
   assert via DB.
-- [ ] The tick skips accounts whose status is `restricted`/`disconnected`
+- [x] The tick skips accounts whose status is `restricted`/`disconnected`
   (no sends); their leads stay put; assert via DB + logs.
-- [ ] Reconnecting (the #1 flow) flips the account back to `active` and
+- [x] Reconnecting (the #1 flow) flips the account back to `active` and
   the tick resumes it; assert via DB.
-- [ ] Settings UI shows restricted status + a reconnect control
+- [x] Settings UI shows restricted status + a reconnect control
   (Playwright).
 
 ## Modules touched

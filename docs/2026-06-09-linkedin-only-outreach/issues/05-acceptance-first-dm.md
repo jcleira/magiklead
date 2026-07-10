@@ -24,17 +24,17 @@ End-to-end:
 
 ## Acceptance criteria
 
-- [ ] An `invitation-accepted` webhook for a known
+- [x] An `invitation-accepted` webhook for a known
   `linkedin_invitation_id` flips the lead to `active`, sets
   `accepted_at` + `next_send_at=NOW()` + `current_step=1`, writes an
   `accepted` event; idempotent on replay. Assert via DB.
-- [ ] On the next tick the lead gets DM step 1 sent via Unipile
+- [x] On the next tick the lead gets DM step 1 sent via Unipile
   send-message (assert payload: account_id, chat/recipient, rendered
   body) → `dm_sent` event with `unipile_chat_id` → `current_step` /
   `next_send_at` advanced to step 2's delay. Assert via DB + stub.
-- [ ] An accept webhook for an unknown invitation id is a safe no-op 200
+- [x] An accept webhook for an unknown invitation id is a safe no-op 200
   (idempotent), logged.
-- [ ] Acceptance updates the account's acceptance-rate signal used later
+- [x] Acceptance updates the account's acceptance-rate signal used later
   by [07](./07-pacer-warmup-breaker-withdrawal.md) (an `accepted` event
   exists to count).
 

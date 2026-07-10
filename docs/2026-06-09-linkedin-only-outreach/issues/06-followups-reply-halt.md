@@ -30,21 +30,21 @@ End-to-end:
 
 ## Acceptance criteria
 
-- [ ] Migration adds `unsubscribes.person_id` (nullable) + the
+- [x] Migration adds `unsubscribes.person_id` (nullable) + the
   unique-index update; a person-keyed suppression query.
-- [ ] Multi-step: a lead with the first DM sent advances through
+- [x] Multi-step: a lead with the first DM sent advances through
   follow-ups on their delays and ends `exhausted` after the last step;
   assert via DB.
-- [ ] An inbound-message webhook for a known `linkedin_chat_id` writes a
+- [x] An inbound-message webhook for a known `linkedin_chat_id` writes a
   `replied` event, flips the lead to `replied`, and inserts a
   person-keyed suppression row; assert via DB.
-- [ ] The send tick refuses to DM a replied/suppressed lead (suppression
+- [x] The send tick refuses to DM a replied/suppressed lead (suppression
   gate) — the zero-DMs-to-replied invariant holds even if a step was
   due; assert via DB + a `skipped` event.
-- [ ] Reconcile poll: with the webhook suppressed in a test, a poll tick
+- [x] Reconcile poll: with the webhook suppressed in a test, a poll tick
   detects an accept and a reply from the Unipile stub and applies the
   same transitions idempotently (no double events). Assert via DB.
-- [ ] `IsSuppressed` still works for the email path unchanged
+- [x] `IsSuppressed` still works for the email path unchanged
   (regression).
 
 ## Modules touched
