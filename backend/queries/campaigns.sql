@@ -1,6 +1,6 @@
 -- name: CreateCampaign :one
-INSERT INTO campaigns (tenant_id, play_id, name, status, gmail_account_id, sequence, linkedin_sequence)
-VALUES ($1, $2, $3, $4, $5, $6, $7)
+INSERT INTO campaigns (tenant_id, play_id, name, status, gmail_account_id, sequence, linkedin_sequence, channel)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
 RETURNING *;
 
 -- name: GetCampaign :one
@@ -96,4 +96,21 @@ LEFT JOIN best b       ON b.person_id = p.id
 LEFT JOIN leads l      ON l.id = cl.lead_id
 JOIN unsubscribes u    ON (u.tenant_id = c.tenant_id OR u.tenant_id IS NULL)
                       AND lower(u.email) = lower(COALESCE(b.email, l.email))
+WHERE cl.campaign_id = $1;
+
+-- CountCampaignLinkedInEvents aggregates the LinkedIn engagement funnel
+-- for one campaign in a single pass over `linkedin_events` (issue #9):
+-- invites sent, invites accepted, DMs sent, and replies. Acceptance and
+-- reply rates are derived in the handler so the SQL stays a pure count
+-- and never divides by zero on an empty campaign. Joins through
+-- campaign_leads; the handler verifies tenant ownership via GetCampaign
+-- before running this, mirroring the email metrics queries above.
+-- name: CountCampaignLinkedInEvents :one
+SELECT
+    COUNT(*) FILTER (WHERE le.event_type = 'invite_sent')::bigint AS invites_sent,
+    COUNT(*) FILTER (WHERE le.event_type = 'accepted')::bigint    AS accepted,
+    COUNT(*) FILTER (WHERE le.event_type = 'dm_sent')::bigint      AS dms_sent,
+    COUNT(*) FILTER (WHERE le.event_type = 'replied')::bigint      AS replies
+FROM linkedin_events le
+JOIN campaign_leads cl ON cl.id = le.campaign_lead_id
 WHERE cl.campaign_id = $1;

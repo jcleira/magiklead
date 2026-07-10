@@ -53,6 +53,43 @@ func (q *Queries) CountCampaignLeadsTotal(ctx context.Context, campaignID pgtype
 	return column_1, err
 }
 
+const countCampaignLinkedInEvents = `-- name: CountCampaignLinkedInEvents :one
+SELECT
+    COUNT(*) FILTER (WHERE le.event_type = 'invite_sent')::bigint AS invites_sent,
+    COUNT(*) FILTER (WHERE le.event_type = 'accepted')::bigint    AS accepted,
+    COUNT(*) FILTER (WHERE le.event_type = 'dm_sent')::bigint      AS dms_sent,
+    COUNT(*) FILTER (WHERE le.event_type = 'replied')::bigint      AS replies
+FROM linkedin_events le
+JOIN campaign_leads cl ON cl.id = le.campaign_lead_id
+WHERE cl.campaign_id = $1
+`
+
+type CountCampaignLinkedInEventsRow struct {
+	InvitesSent int64 `json:"invites_sent"`
+	Accepted    int64 `json:"accepted"`
+	DmsSent     int64 `json:"dms_sent"`
+	Replies     int64 `json:"replies"`
+}
+
+// CountCampaignLinkedInEvents aggregates the LinkedIn engagement funnel
+// for one campaign in a single pass over `linkedin_events` (issue #9):
+// invites sent, invites accepted, DMs sent, and replies. Acceptance and
+// reply rates are derived in the handler so the SQL stays a pure count
+// and never divides by zero on an empty campaign. Joins through
+// campaign_leads; the handler verifies tenant ownership via GetCampaign
+// before running this, mirroring the email metrics queries above.
+func (q *Queries) CountCampaignLinkedInEvents(ctx context.Context, campaignID pgtype.UUID) (CountCampaignLinkedInEventsRow, error) {
+	row := q.db.QueryRow(ctx, countCampaignLinkedInEvents, campaignID)
+	var i CountCampaignLinkedInEventsRow
+	err := row.Scan(
+		&i.InvitesSent,
+		&i.Accepted,
+		&i.DmsSent,
+		&i.Replies,
+	)
+	return i, err
+}
+
 const countCampaignRepliedTotal = `-- name: CountCampaignRepliedTotal :one
 SELECT COUNT(*)::bigint
 FROM email_events ee
@@ -155,9 +192,9 @@ func (q *Queries) CountCampaignUnsubscribedTotal(ctx context.Context, campaignID
 }
 
 const createCampaign = `-- name: CreateCampaign :one
-INSERT INTO campaigns (tenant_id, play_id, name, status, gmail_account_id, sequence, linkedin_sequence)
-VALUES ($1, $2, $3, $4, $5, $6, $7)
-RETURNING id, tenant_id, play_id, name, status, gmail_account_id, sequence, linkedin_sequence, stats, created_at
+INSERT INTO campaigns (tenant_id, play_id, name, status, gmail_account_id, sequence, linkedin_sequence, channel)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+RETURNING id, tenant_id, play_id, name, status, gmail_account_id, sequence, linkedin_sequence, stats, created_at, channel
 `
 
 type CreateCampaignParams struct {
@@ -168,6 +205,7 @@ type CreateCampaignParams struct {
 	GmailAccountID   pgtype.UUID `json:"gmail_account_id"`
 	Sequence         []byte      `json:"sequence"`
 	LinkedinSequence []byte      `json:"linkedin_sequence"`
+	Channel          string      `json:"channel"`
 }
 
 func (q *Queries) CreateCampaign(ctx context.Context, arg CreateCampaignParams) (Campaign, error) {
@@ -179,6 +217,7 @@ func (q *Queries) CreateCampaign(ctx context.Context, arg CreateCampaignParams) 
 		arg.GmailAccountID,
 		arg.Sequence,
 		arg.LinkedinSequence,
+		arg.Channel,
 	)
 	var i Campaign
 	err := row.Scan(
@@ -192,12 +231,13 @@ func (q *Queries) CreateCampaign(ctx context.Context, arg CreateCampaignParams) 
 		&i.LinkedinSequence,
 		&i.Stats,
 		&i.CreatedAt,
+		&i.Channel,
 	)
 	return i, err
 }
 
 const getCampaign = `-- name: GetCampaign :one
-SELECT id, tenant_id, play_id, name, status, gmail_account_id, sequence, linkedin_sequence, stats, created_at FROM campaigns WHERE id = $1 AND tenant_id = $2
+SELECT id, tenant_id, play_id, name, status, gmail_account_id, sequence, linkedin_sequence, stats, created_at, channel FROM campaigns WHERE id = $1 AND tenant_id = $2
 `
 
 type GetCampaignParams struct {
@@ -219,12 +259,13 @@ func (q *Queries) GetCampaign(ctx context.Context, arg GetCampaignParams) (Campa
 		&i.LinkedinSequence,
 		&i.Stats,
 		&i.CreatedAt,
+		&i.Channel,
 	)
 	return i, err
 }
 
 const getCampaignByID = `-- name: GetCampaignByID :one
-SELECT id, tenant_id, play_id, name, status, gmail_account_id, sequence, linkedin_sequence, stats, created_at FROM campaigns WHERE id = $1
+SELECT id, tenant_id, play_id, name, status, gmail_account_id, sequence, linkedin_sequence, stats, created_at, channel FROM campaigns WHERE id = $1
 `
 
 func (q *Queries) GetCampaignByID(ctx context.Context, id pgtype.UUID) (Campaign, error) {
@@ -241,12 +282,13 @@ func (q *Queries) GetCampaignByID(ctx context.Context, id pgtype.UUID) (Campaign
 		&i.LinkedinSequence,
 		&i.Stats,
 		&i.CreatedAt,
+		&i.Channel,
 	)
 	return i, err
 }
 
 const listCampaigns = `-- name: ListCampaigns :many
-SELECT id, tenant_id, play_id, name, status, gmail_account_id, sequence, linkedin_sequence, stats, created_at FROM campaigns WHERE tenant_id = $1 ORDER BY created_at DESC
+SELECT id, tenant_id, play_id, name, status, gmail_account_id, sequence, linkedin_sequence, stats, created_at, channel FROM campaigns WHERE tenant_id = $1 ORDER BY created_at DESC
 `
 
 func (q *Queries) ListCampaigns(ctx context.Context, tenantID pgtype.UUID) ([]Campaign, error) {
@@ -269,6 +311,7 @@ func (q *Queries) ListCampaigns(ctx context.Context, tenantID pgtype.UUID) ([]Ca
 			&i.LinkedinSequence,
 			&i.Stats,
 			&i.CreatedAt,
+			&i.Channel,
 		); err != nil {
 			return nil, err
 		}
@@ -309,7 +352,7 @@ func (q *Queries) UpdateCampaignStats(ctx context.Context, arg UpdateCampaignSta
 }
 
 const updateCampaignStatus = `-- name: UpdateCampaignStatus :one
-UPDATE campaigns SET status = $2 WHERE id = $1 RETURNING id, tenant_id, play_id, name, status, gmail_account_id, sequence, linkedin_sequence, stats, created_at
+UPDATE campaigns SET status = $2 WHERE id = $1 RETURNING id, tenant_id, play_id, name, status, gmail_account_id, sequence, linkedin_sequence, stats, created_at, channel
 `
 
 type UpdateCampaignStatusParams struct {
@@ -331,6 +374,7 @@ func (q *Queries) UpdateCampaignStatus(ctx context.Context, arg UpdateCampaignSt
 		&i.LinkedinSequence,
 		&i.Stats,
 		&i.CreatedAt,
+		&i.Channel,
 	)
 	return i, err
 }

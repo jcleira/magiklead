@@ -1,0 +1,60 @@
+{
+  "event": "message_received",
+  "account_id": "acct_test_0001",
+  "account_type": "LINKEDIN",
+  "account_info": {
+    "type": "LINKEDIN",
+    "feature": "classic",
+    "user_id": "ACoAA-own-0001"
+  },
+  "webhook_name": "magiklead-mvp-messaging",
+  "chat_id": "chat_outbound_0002",
+  "attendees": [
+    {
+      "attendee_id": "att_prospect_0002",
+      "attendee_provider_id": "ACoAA-prospect-0002",
+      "attendee_name": "Prospect Two",
+      "attendee_profile_url": "https://www.linkedin.com/in/ACoAA-prospect-0002",
+      "attendee_specifics": {
+        "provider": "LINKEDIN",
+        "member_urn": "urn:li:member:1000002",
+        "occupation": "VP Sales",
+        "is_company": false,
+        "network_distance": "DISTANCE_1"
+      },
+      "attendee_public_identifier": null
+    }
+  ],
+  "sender": {
+    "attendee_id": "att_own_0001",
+    "attendee_provider_id": "ACoAA-own-0001",
+    "attendee_name": "Connected Account",
+    "attendee_profile_url": "https://www.linkedin.com/in/ACoAA-own-0001",
+    "attendee_specifics": {
+      "provider": "LINKEDIN",
+      "member_urn": "urn:li:member:9000001",
+      "occupation": "Founder",
+      "is_company": false,
+      "network_distance": "DISTANCE_1"
+    },
+    "attendee_public_identifier": null
+  },
+  "subject": null,
+  "message": "great to connect — quick question for you",
+  "message_id": "msg_outbound_0002",
+  "timestamp": "2026-07-06T10:15:04.117Z",
+  "attachments": [],
+  "is_sender": true,
+  "provider_chat_id": "2-chatprovider0002",
+  "provider_message_id": "2-msgprovider0002",
+  "is_event": 0,
+  "chat_pinned": 0,
+  "quoted": null,
+  "reply_to": null,
+  "is_forwarded": null,
+  "chat_content_type": null,
+  "message_type": "MESSAGE",
+  "is_group": false,
+  "folder": ["INBOX", "INBOX_LINKEDIN_CLASSIC"],
+  "event_type": null
+}

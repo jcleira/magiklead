@@ -1,0 +1,60 @@
+{
+  "event": "message_received",
+  "account_id": "acct_test_0001",
+  "account_type": "LINKEDIN",
+  "account_info": {
+    "type": "LINKEDIN",
+    "feature": "classic",
+    "user_id": "ACoAA-own-0001"
+  },
+  "webhook_name": "magiklead-mvp-messaging",
+  "chat_id": "chat_inbound_0001",
+  "attendees": [
+    {
+      "attendee_id": "att_prospect_0001",
+      "attendee_provider_id": "ACoAA-prospect-0001",
+      "attendee_name": "Prospect One",
+      "attendee_profile_url": "https://www.linkedin.com/in/ACoAA-prospect-0001",
+      "attendee_specifics": {
+        "provider": "LINKEDIN",
+        "member_urn": "urn:li:member:1000001",
+        "occupation": "Head of Growth",
+        "is_company": false,
+        "network_distance": "DISTANCE_1"
+      },
+      "attendee_public_identifier": null
+    }
+  ],
+  "sender": {
+    "attendee_id": "att_prospect_0001",
+    "attendee_provider_id": "ACoAA-prospect-0001",
+    "attendee_name": "Prospect One",
+    "attendee_profile_url": "https://www.linkedin.com/in/ACoAA-prospect-0001",
+    "attendee_specifics": {
+      "provider": "LINKEDIN",
+      "member_urn": "urn:li:member:1000001",
+      "occupation": "Head of Growth",
+      "is_company": false,
+      "network_distance": "DISTANCE_1"
+    },
+    "attendee_public_identifier": null
+  },
+  "subject": null,
+  "message": "hi, thanks for connecting",
+  "message_id": "msg_inbound_0001",
+  "timestamp": "2026-07-06T09:43:27.002Z",
+  "attachments": [],
+  "is_sender": false,
+  "provider_chat_id": "2-chatprovider0001",
+  "provider_message_id": "2-msgprovider0001",
+  "is_event": 0,
+  "chat_pinned": 0,
+  "quoted": null,
+  "reply_to": null,
+  "is_forwarded": null,
+  "chat_content_type": null,
+  "message_type": "MESSAGE",
+  "is_group": false,
+  "folder": ["INBOX", "INBOX_LINKEDIN_CLASSIC"],
+  "event_type": null
+}

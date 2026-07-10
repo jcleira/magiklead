@@ -10,8 +10,8 @@ services:
       DEVPOD_PROJECT: ${DEVPOD_PROJECT}
       APP_ENV: dev
       PORT: "8080"
-      APP_URL: ${API_URL}
-      FRONTEND_URL: ${FRONTEND_URL}
+      APP_URL: https://api-${DEVPOD_NAME}.${DEVPOD_PROJECT}.localhost
+      FRONTEND_URL: https://${DEVPOD_NAME}.${DEVPOD_PROJECT}.localhost
       DATABASE_URL: ${DATABASE_URL}
       REDIS_URL: ${REDIS_URL}
       S3_ENDPOINT: ${S3_ENDPOINT}
@@ -102,8 +102,8 @@ services:
     environment:
       DEVPOD_NAME: ${DEVPOD_NAME}
       DEVPOD_PROJECT: ${DEVPOD_PROJECT}
-      NEXT_PUBLIC_API_URL: ${API_URL}
-      NEXT_PUBLIC_APP_URL: ${FRONTEND_URL}
+      NEXT_PUBLIC_API_URL: https://api-${DEVPOD_NAME}.${DEVPOD_PROJECT}.localhost
+      NEXT_PUBLIC_APP_URL: https://${DEVPOD_NAME}.${DEVPOD_PROJECT}.localhost
       PORT: "3000"
     volumes:
       - ./frontend:/app

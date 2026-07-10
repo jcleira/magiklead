@@ -93,6 +93,7 @@ func newFixture(t *testing.T, pool *pgxpool.Pool, email string) *fixture {
 
 	t.Cleanup(func() {
 		_, _ = pool.Exec(ctx, `DELETE FROM email_events WHERE campaign_lead_id = $1`, f.campaignLeadID)
+		_, _ = pool.Exec(ctx, `DELETE FROM linkedin_events WHERE campaign_lead_id = $1`, f.campaignLeadID)
 		_, _ = pool.Exec(ctx, `DELETE FROM campaign_leads WHERE id = $1`, f.campaignLeadID)
 		_, _ = pool.Exec(ctx, `DELETE FROM campaigns WHERE id = $1`, f.campaignID)
 		_, _ = pool.Exec(ctx, `DELETE FROM plays WHERE id = $1`, f.playID)
@@ -367,6 +368,110 @@ func TestRecordReply(t *testing.T) {
 	if !ok || reason != suppression.ReasonReply {
 		t.Errorf("after RecordReply expected (true, %q), got (%t, %q)",
 			suppression.ReasonReply, ok, reason)
+	}
+}
+
+// TestIsSuppressedPerson covers the LinkedIn person-keyed gate (issue #6):
+// a person with no email is suppressed by a person-keyed unsubscribes row,
+// the gate reports the reason, and a row is scoped to its tenant.
+func TestIsSuppressedPerson(t *testing.T) {
+	pool := withPool(t)
+	f := newFixture(t, pool, "")
+	ctx := context.Background()
+	m := suppression.New(pool)
+
+	// Not suppressed before any row exists.
+	ok, _, err := m.IsSuppressedPerson(ctx, f.tenantID, f.personID)
+	if err != nil {
+		t.Fatalf("IsSuppressedPerson: %v", err)
+	}
+	if ok {
+		t.Fatal("person must not be suppressed before any row exists")
+	}
+
+	mustExec(t, pool, `INSERT INTO unsubscribes (tenant_id, person_id, reason) VALUES ($1, $2, $3)`,
+		f.tenantID, f.personID, suppression.ReasonReply)
+
+	ok, reason, err := m.IsSuppressedPerson(ctx, f.tenantID, f.personID)
+	if err != nil {
+		t.Fatalf("IsSuppressedPerson: %v", err)
+	}
+	if !ok || reason != suppression.ReasonReply {
+		t.Errorf("expected (true, %q), got (%t, %q)", suppression.ReasonReply, ok, reason)
+	}
+
+	// Tenant-scoped: a different tenant must not see this person's row.
+	ok, _, err = m.IsSuppressedPerson(ctx, uuid.New(), f.personID)
+	if err != nil {
+		t.Fatalf("IsSuppressedPerson other tenant: %v", err)
+	}
+	if ok {
+		t.Error("person suppression leaked across tenants")
+	}
+}
+
+// TestRecordReplyByPerson exercises the LinkedIn reply path at the module
+// level: the lead flips to 'replied', a 'replied' linkedin_event lands with
+// the inbound message id, the person is suppressed, and a replay is a no-op
+// (the idempotency the webhook + reconcile both rely on).
+func TestRecordReplyByPerson(t *testing.T) {
+	pool := withPool(t)
+	f := newFixture(t, pool, "")
+	ctx := context.Background()
+	m := suppression.New(pool)
+
+	if err := m.RecordReplyByPerson(ctx, f.campaignLeadID, "msg_inbound_1"); err != nil {
+		t.Fatalf("RecordReplyByPerson: %v", err)
+	}
+
+	// Lead halted.
+	var status string
+	if err := pool.QueryRow(ctx, `SELECT status FROM campaign_leads WHERE id = $1`, f.campaignLeadID).Scan(&status); err != nil {
+		t.Fatalf("scan status: %v", err)
+	}
+	if status != "replied" {
+		t.Errorf("campaign_leads.status=%q want 'replied'", status)
+	}
+
+	// 'replied' linkedin_event written once with the message id.
+	var cnt int
+	var msgID pgtype.Text
+	if err := pool.QueryRow(ctx, `SELECT COUNT(*), MAX(unipile_message_id) FROM linkedin_events WHERE campaign_lead_id = $1 AND event_type = 'replied'`, f.campaignLeadID).
+		Scan(&cnt, &msgID); err != nil {
+		t.Fatalf("scan replied event: %v", err)
+	}
+	if cnt != 1 {
+		t.Errorf("replied linkedin_events=%d want 1", cnt)
+	}
+	if !msgID.Valid || msgID.String != "msg_inbound_1" {
+		t.Errorf("replied event unipile_message_id=%+v want msg_inbound_1", msgID)
+	}
+
+	// Person suppressed with reason='reply'.
+	ok, reason, err := m.IsSuppressedPerson(ctx, f.tenantID, f.personID)
+	if err != nil {
+		t.Fatalf("IsSuppressedPerson: %v", err)
+	}
+	if !ok || reason != suppression.ReasonReply {
+		t.Errorf("after RecordReplyByPerson expected (true, %q), got (%t, %q)", suppression.ReasonReply, ok, reason)
+	}
+
+	// Replay is a no-op — still one 'replied' event, still one suppression row.
+	if err := m.RecordReplyByPerson(ctx, f.campaignLeadID, "msg_inbound_2"); err != nil {
+		t.Fatalf("RecordReplyByPerson replay: %v", err)
+	}
+	if err := pool.QueryRow(ctx, `SELECT COUNT(*) FROM linkedin_events WHERE campaign_lead_id = $1 AND event_type = 'replied'`, f.campaignLeadID).Scan(&cnt); err != nil {
+		t.Fatalf("scan replied count: %v", err)
+	}
+	if cnt != 1 {
+		t.Errorf("replied events after replay=%d want 1 (idempotent)", cnt)
+	}
+	var unsubCount int
+	if err := pool.QueryRow(ctx, `SELECT COUNT(*) FROM unsubscribes WHERE tenant_id = $1 AND person_id = $2`, f.tenantID, f.personID).Scan(&unsubCount); err != nil {
+		t.Fatalf("scan unsub count: %v", err)
+	}
+	if unsubCount != 1 {
+		t.Errorf("unsubscribes rows=%d want 1 (idempotent)", unsubCount)
 	}
 }
 

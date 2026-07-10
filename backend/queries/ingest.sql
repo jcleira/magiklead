@@ -84,6 +84,16 @@ LIMIT 1;
 INSERT INTO person_identifiers (person_id, identifier_type, identifier_value, is_primary)
 VALUES ($1, $2, $3, $4);
 
+-- GetPersonIdentifier reads a single identifier value of a given type off a
+-- person — the read side of the member-id cache (issue #5): given a person
+-- and 'linkedin_member_id', it returns the cached Unipile member id, or
+-- pgx.ErrNoRows on a miss (the signal to resolve upstream and persist).
+-- name: GetPersonIdentifier :one
+SELECT identifier_value
+FROM person_identifiers
+WHERE person_id = $1 AND identifier_type = $2
+LIMIT 1;
+
 -- name: CreatePersonAlias :exec
 INSERT INTO person_aliases (person_id, alias, alias_type)
 VALUES ($1, $2, $3)

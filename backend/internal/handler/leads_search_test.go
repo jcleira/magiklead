@@ -56,7 +56,7 @@ func TestToSearchResult(t *testing.T) {
 		IsCatchall: pgtype.Bool{Bool: false, Valid: true},
 	}
 
-	got := toSearchResult(person, email)
+	got := toSearchResult(person, email, "")
 
 	if got.Name != "Tim Cook" {
 		t.Errorf("Name=%q", got.Name)
@@ -86,16 +86,40 @@ func TestToSearchResult_NoEmail(t *testing.T) {
 		OrganizationName:    "Stealth Co",
 	}
 
-	got := toSearchResult(person, repository.ListBestEmailsForPersonsRow{})
+	got := toSearchResult(person, repository.ListBestEmailsForPersonsRow{}, "")
 
 	if got.Email != nil {
 		t.Errorf("Email should be nil, got %v", *got.Email)
+	}
+	if got.LinkedInURL != nil {
+		t.Errorf("LinkedInURL should be nil when none provided, got %v", *got.LinkedInURL)
 	}
 	if got.EmailVerified {
 		t.Errorf("EmailVerified should default to false")
 	}
 	if got.FirstName != nil || got.LastName != nil || got.Title != nil || got.Domain != nil {
 		t.Errorf("nullable fields should be nil")
+	}
+}
+
+// TestToSearchResult_LinkedInURL — a LinkedIn-sourced prospect (no email)
+// surfaces its profile link (issue #2).
+func TestToSearchResult_LinkedInURL(t *testing.T) {
+	person := repository.SearchPersonsRow{
+		PersonID:            pgtype.UUID{Bytes: [16]byte{5}, Valid: true},
+		PersonCanonicalName: "Jason Fried",
+		OrganizationID:      pgtype.UUID{Bytes: [16]byte{6}, Valid: true},
+		OrganizationName:    "37signals",
+	}
+	const url = "https://www.linkedin.com/in/jason-fried-37signals"
+
+	got := toSearchResult(person, repository.ListBestEmailsForPersonsRow{}, url)
+
+	if got.LinkedInURL == nil || *got.LinkedInURL != url {
+		t.Errorf("LinkedInURL=%v want %q", got.LinkedInURL, url)
+	}
+	if got.Email != nil {
+		t.Errorf("LinkedIn prospect must have no email, got %v", *got.Email)
 	}
 }
 

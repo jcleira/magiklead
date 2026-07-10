@@ -26,6 +26,7 @@ import (
 	gmailpkg "github.com/jcleira/magiklead/backend/internal/gmail"
 	"github.com/jcleira/magiklead/backend/internal/handler"
 	"github.com/jcleira/magiklead/backend/internal/leads/pdl"
+	"github.com/jcleira/magiklead/backend/internal/linkedin/unipile"
 	"github.com/jcleira/magiklead/backend/internal/middleware"
 	"github.com/jcleira/magiklead/backend/internal/repository"
 	"github.com/jcleira/magiklead/backend/internal/suppression"
@@ -99,6 +100,22 @@ func main() {
 		log.Print("PDL_API_KEY not set — lead search falls through to canonical-only mode")
 	}
 
+	// Unipile — LinkedIn send rail (docs/2026-06-09-linkedin-only-outreach).
+	// Wired unconditionally; the handler degrades (like PDL) when
+	// UNIPILE_API_KEY is absent. UNIPILE_WEBHOOK_SECRET signs both the
+	// metadata token embedded in the hosted-auth link and the inbound
+	// webhook body HMAC, so it is required once the api key is set
+	// (the public webhook itself still returns 503 if it is missing).
+	unipileKey := os.Getenv("UNIPILE_API_KEY")
+	unipileWebhookSecret := os.Getenv("UNIPILE_WEBHOOK_SECRET")
+	if unipileKey != "" && unipileWebhookSecret == "" {
+		log.Fatal("UNIPILE_WEBHOOK_SECRET is required when UNIPILE_API_KEY is set (signs the metadata token and verifies inbound webhooks)")
+	}
+	unipileModule := unipile.New(unipileKey, os.Getenv("UNIPILE_DSN"), []byte(unipileWebhookSecret), nil)
+	if unipileKey == "" {
+		log.Print("UNIPILE_API_KEY not set — LinkedIn connect/send features disabled")
+	}
+
 	// Handlers
 	websiteH := handler.NewWebsiteHandler(aiClient, queries)
 	playH := handler.NewPlayHandler(aiClient, queries)
@@ -106,6 +123,7 @@ func main() {
 	leadH := handler.NewLeadHandler(queries, asynqClient)
 	leadSearchH := handler.NewLeadSearchHandler(queries, pdlModule)
 	gmailH := handler.NewGmailHandler(gmailSvc, queries, []byte(gmailStateSecret), os.Getenv("FRONTEND_URL"))
+	unipileH := handler.NewUnipileHandler(unipileModule, queries, supp, []byte(unipileWebhookSecret), os.Getenv("FRONTEND_URL"), os.Getenv("APP_URL"))
 	sequenceH := handler.NewSequenceHandler(aiClient, queries)
 	emailAccH := handler.NewEmailAccountHandler(queries)
 	deliverH := handler.NewDeliverabilityHandler()
@@ -150,6 +168,10 @@ func main() {
 		// Public webhook routes
 		r.Post("/webhooks/clerk", clerkH.HandleWebhook)
 		r.Post("/webhooks/stripe", billingH.HandleWebhook)
+		// Unipile webhook (public): Unipile reaches it with no Clerk
+		// session — authentication is the HMAC signature over the body
+		// plus the signed metadata in the account.connected payload.
+		r.Post("/webhooks/unipile", unipileH.Webhook)
 
 		// GDPR right-to-erasure (public) — request/confirm flow:
 		// request stores a hashed 24h token and mails a link; confirm
@@ -189,6 +211,7 @@ func main() {
 			r.Get("/campaigns", campaignH.List)
 			r.Get("/campaigns/{id}", campaignH.Get)
 			r.Get("/campaigns/{id}/metrics", campaignH.Metrics)
+			r.Get("/campaigns/{id}/linkedin-metrics", campaignH.LinkedInMetrics)
 			r.Post("/campaigns/{id}/start", campaignH.Start)
 			r.Post("/campaigns/{id}/pause", campaignH.Pause)
 			r.Get("/campaigns/{id}/leads", campaignH.ListLeads)
@@ -216,6 +239,14 @@ func main() {
 			r.Get("/gmail/auth-url", gmailH.AuthURL)
 			r.Get("/gmail/accounts", gmailH.ListAccounts)
 			r.Delete("/gmail/accounts/{id}", gmailH.DeleteAccount)
+
+			// LinkedIn (Unipile hosted-auth). The webhook is public
+			// (see above); minting the signed metadata requires the
+			// Clerk session, so auth-url stays here.
+			r.Get("/linkedin/auth-url", unipileH.AuthURL)
+			r.Get("/linkedin/accounts", unipileH.ListAccounts)
+			r.Get("/linkedin/capacity", unipileH.Capacity)
+			r.Delete("/linkedin/accounts/{id}", unipileH.DeleteAccount)
 
 			// Email Accounts (SMTP + Gmail)
 			r.Post("/email-accounts/smtp", emailAccH.ConnectSMTP)

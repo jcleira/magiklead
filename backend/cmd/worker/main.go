@@ -12,6 +12,8 @@ import (
 	"github.com/jcleira/magiklead/backend/internal/gmail"
 	"github.com/jcleira/magiklead/backend/internal/gmail/poller"
 	"github.com/jcleira/magiklead/backend/internal/leads"
+	"github.com/jcleira/magiklead/backend/internal/linkedin/pacer"
+	"github.com/jcleira/magiklead/backend/internal/linkedin/unipile"
 	"github.com/jcleira/magiklead/backend/internal/repository"
 	"github.com/jcleira/magiklead/backend/internal/suppression"
 	"github.com/jcleira/magiklead/backend/internal/worker"
@@ -80,6 +82,27 @@ func main() {
 	defer cancel()
 	go worker.StartSendLoop(ctx, queries, supp, gmailSender.Send, unsubCfg)
 	go worker.StartPollLoop(ctx, queries, supp, gmailPoller.Tick)
+
+	// LinkedIn invite send rail (issue #4). The worker only sends invites,
+	// so the module carries no webhook secret — verifying inbound webhooks
+	// is the api's job. Absent UNIPILE_API_KEY the rail degrades like PDL:
+	// we don't start the loop, so queued LinkedIn leads simply wait rather
+	// than logging a failed event every tick. UNIPILE_DSN is the per-tenant
+	// Unipile API base URL.
+	unipileModule := unipile.New(os.Getenv("UNIPILE_API_KEY"), os.Getenv("UNIPILE_DSN"), nil, nil)
+	if unipileModule.Configured() {
+		go worker.StartLinkedInLoop(ctx, queries, supp, unipileModule.SendInvitation, unipileModule.SendMessage, unipileModule.ResolveMemberID, pacer.Standard())
+		// Reconcile poll (issues #6/#7): a ~45-min backstop that detects
+		// acceptances from each account's connections list and applies any
+		// reply a webhook never delivered, idempotent with the webhook path.
+		go worker.StartLinkedInReconcileLoop(ctx, queries, supp, unipileModule.AccountConnections, unipileModule.AccountActivity)
+		// Stale-invite withdrawal sweep (issue #7): hourly, cancels invites
+		// that have gone unaccepted past the 21-day horizon and closes their
+		// leads not_accepted.
+		go worker.StartLinkedInWithdrawalLoop(ctx, queries, unipileModule.CancelInvitation)
+	} else {
+		log.Println("UNIPILE_API_KEY not set — LinkedIn loop disabled")
+	}
 
 	log.Println("Worker starting...")
 	if err := srv.Run(mux); err != nil {
