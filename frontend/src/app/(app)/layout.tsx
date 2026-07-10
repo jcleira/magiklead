@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
+import { UserButton } from "@clerk/nextjs";
 import { useTheme } from "@/hooks/use-theme";
 
 const navItems = [
@@ -84,7 +85,7 @@ export default function AppLayout({
           </div>
           <div className="hidden lg:block" />
           <div className="flex items-center gap-3">
-            <div className="h-8 w-8 rounded-full bg-slate-200" />
+            <UserButton />
           </div>
         </header>
 

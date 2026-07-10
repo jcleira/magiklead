@@ -35,12 +35,20 @@ export default function CampaignsPage() {
     <div className="p-8">
       <div className="flex items-center justify-between">
         <h1 className="text-2xl font-bold text-slate-900">Campaigns</h1>
-        <Link
-          href="/onboarding"
-          className="rounded-lg bg-slate-900 px-4 py-2 text-sm font-semibold text-white hover:bg-slate-800"
-        >
-          New Campaign
-        </Link>
+        <div className="flex items-center gap-3">
+          <Link
+            href="/campaigns/new-linkedin"
+            className="rounded-lg border border-slate-300 px-4 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-50"
+          >
+            New LinkedIn campaign
+          </Link>
+          <Link
+            href="/onboarding"
+            className="rounded-lg bg-slate-900 px-4 py-2 text-sm font-semibold text-white hover:bg-slate-800"
+          >
+            New Campaign
+          </Link>
+        </div>
       </div>
 
       {loading ? (
