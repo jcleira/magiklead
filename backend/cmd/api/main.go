@@ -63,7 +63,10 @@ func main() {
 	}
 	defer pool.Close()
 
-	redisOpt := asynq.RedisClientOpt{Addr: os.Getenv("REDIS_URL")}
+	redisOpt, err := asynq.ParseRedisURI(os.Getenv("REDIS_URL"))
+	if err != nil {
+		log.Fatalf("invalid REDIS_URL for asynq: %v", err)
+	}
 	asynqClient := asynq.NewClient(redisOpt)
 	defer asynqClient.Close()
 

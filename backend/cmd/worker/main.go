@@ -49,8 +49,12 @@ func main() {
 	// Lead discovery — AI + web scraping + SMTP email verification
 	pipeline := leads.NewPipeline(queries, os.Getenv("ANTHROPIC_API_KEY"))
 
+	redisOpt, err := asynq.ParseRedisURI(os.Getenv("REDIS_URL"))
+	if err != nil {
+		log.Fatalf("invalid REDIS_URL for asynq: %v", err)
+	}
 	srv := asynq.NewServer(
-		asynq.RedisClientOpt{Addr: os.Getenv("REDIS_URL")},
+		redisOpt,
 		asynq.Config{
 			Concurrency: 5,
 			Queues:      map[string]int{"default": 1},
