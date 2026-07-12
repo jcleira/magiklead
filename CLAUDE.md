@@ -40,15 +40,20 @@ entrypoint runs `go run ./cmd/migrate` before handing control to air.
 
 The canonical `persons` graph is empty after migrations apply — the
 real ingest pipeline is operational (Phase 3 of the plan). For local
-testing the in-tree fixture loader inserts 5 organizations + 20
-persons + verified emails:
+testing the in-tree fixture loader inserts both channels' prospects:
+5 organizations + 20 persons with verified emails (email prospects),
+plus 2 organizations + 6 persons with `linkedin_url` identifiers and
+no email (LinkedIn prospects — what the LinkedIn-channel search
+returns):
 
 ```
 devpods exec api go run ./cmd/seed
 ```
 
 Idempotent: re-running clears prior fixtures by `(devpod-fixture)`
-suffix and replants them. Doesn't touch any non-fixture rows.
+suffix (cascade drops their identifiers + employments) and replants
+them. Doesn't touch any non-fixture rows. `devpods seed regenerate`
+bakes the same data into the local snapshot.
 
 ### Info files
 

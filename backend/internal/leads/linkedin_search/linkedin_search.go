@@ -5,11 +5,11 @@
 // NO email: LinkedIn profiles carry no address, so the emails table is
 // never touched and persons.has_email stays false.
 //
-// Two sources feed the same write-through: production is a RapidAPI
-// LinkedIn people-search (default rockapis `linkedin-data-api`, behind a
-// Doer seam); demo mode is the in-tree company-site scraper
-// (internal/leads/scraper.go) driven by cmd/linkedin-demo — no RapidAPI
-// key needed. The RapidAPI wire shape below is provisional; confirm it
+// Production feeds this write-through from a RapidAPI LinkedIn
+// people-search (default rockapis `linkedin-data-api`, behind a Doer
+// seam); local dev gets its prospects from the seed loader (cmd/seed),
+// which plants synthetic LinkedIn profiles through the same canonical
+// path. The RapidAPI wire shape below is provisional; confirm it
 // against the live endpoint when a real key is wired (only fetch/parse
 // change — the write-through is source-agnostic).
 //

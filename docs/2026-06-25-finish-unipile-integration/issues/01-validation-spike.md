@@ -157,8 +157,9 @@ payload wasn't captured, it isn't a fixture.
 - The **temporary capture log** in the webhook handler
   (`backend/internal/handler/unipile.go` — the `UNIPILE-CAPTURE` log
   block). Leave it in place for this slice; #2 removes it.
-- `backend/cmd/linkedin-demo/` — prospect/spike tooling for seeding test
-  recipients.
+- Synthetic LinkedIn prospect fixtures for seeding test recipients
+  (originally a standalone `backend/cmd/linkedin-demo/`; folded into the
+  seed loader `backend/cmd/seed` on 2026-07-12).
 - Unipile dashboard (webhook source registration + API key rotation).
 - Devpod env (`~/.config/devpods/magiklead/.env.backend`).
 - A new `testdata` fixtures directory for the frozen raw bytes.

@@ -1,8 +1,10 @@
 // Local-dev fixture loader. Inserts a handful of canonical
-// organizations + persons + employments + verified emails so the
-// `/leads` search and save flows return non-empty results in a fresh
-// devpod. Idempotent — re-running clears prior fixture rows by
-// canonical_name and replants them.
+// organizations + persons + employments — email prospects (with
+// verified emails) and LinkedIn prospects (with a linkedin_url
+// identifier, no email) — so the `/leads` search, save, and campaign
+// flows return non-empty results on both channels in a fresh devpod.
+// Idempotent — re-running clears prior fixture rows by canonical_name
+// (cascade drops their identifiers + employments) and replants them.
 //
 // Invoke from the api container:
 //
@@ -88,6 +90,47 @@ FROM person_input pi
 JOIN people p ON p.canonical_name = pi.canonical_name
 JOIN org_input o ON o.canonical_name = pi.org_canonical;
 
+-- LinkedIn prospects. Same canonical shape as the email fixtures minus
+-- the email — org → person → linkedin_url identifier → current
+-- employment — so persons.has_email stays false. These are what the
+-- LinkedIn-channel lead search returns (it keys on the linkedin_url
+-- identifier and never requires an address). Synthetic, deterministic
+-- linkedin_urls in the SyntheticURL(name, domain) shape. The DELETE at
+-- the top of this transaction covers them too: dropping the person
+-- cascades to its identifier + employment.
+WITH li_org_input(canonical_name, primary_domain) AS (
+    VALUES
+        ('Hooli (devpod-fixture)',      'hooli.test'),
+        ('Pied Piper (devpod-fixture)', 'piedpiper.test')
+), li_orgs AS (
+    INSERT INTO organizations (canonical_name, primary_domain)
+    SELECT canonical_name, primary_domain FROM li_org_input
+    RETURNING id, canonical_name
+), li_person_input(canonical_name, first_name, last_name, normalized_name, org_canonical, title, linkedin_url) AS (
+    VALUES
+        ('Gavin Belson (devpod-fixture)',      'Gavin',   'Belson',    'gavin belson',      'Hooli (devpod-fixture)',      'CEO',                    'https://www.linkedin.com/in/gavin-belson-hooli'),
+        ('Nelson Bighetti (devpod-fixture)',   'Nelson',  'Bighetti',  'nelson bighetti',   'Hooli (devpod-fixture)',      'Head of Product',        'https://www.linkedin.com/in/nelson-bighetti-hooli'),
+        ('Richard Hendricks (devpod-fixture)', 'Richard', 'Hendricks', 'richard hendricks', 'Pied Piper (devpod-fixture)', 'Founder & CEO',          'https://www.linkedin.com/in/richard-hendricks-piedpiper'),
+        ('Bertram Gilfoyle (devpod-fixture)',  'Bertram', 'Gilfoyle',  'bertram gilfoyle',  'Pied Piper (devpod-fixture)', 'Head of Infrastructure', 'https://www.linkedin.com/in/bertram-gilfoyle-piedpiper'),
+        ('Dinesh Chugtai (devpod-fixture)',    'Dinesh',  'Chugtai',   'dinesh chugtai',    'Pied Piper (devpod-fixture)', 'Staff Engineer',         'https://www.linkedin.com/in/dinesh-chugtai-piedpiper'),
+        ('Jared Dunn (devpod-fixture)',        'Jared',   'Dunn',      'jared dunn',        'Pied Piper (devpod-fixture)', 'Head of Operations',     'https://www.linkedin.com/in/jared-dunn-piedpiper')
+), li_people AS (
+    INSERT INTO persons (canonical_name, first_name, last_name, normalized_name)
+    SELECT canonical_name, first_name, last_name, normalized_name FROM li_person_input
+    RETURNING id, canonical_name
+), li_employments AS (
+    INSERT INTO employments (person_id, organization_id, title, is_current)
+    SELECT p.id, o.id, li.title, TRUE
+    FROM li_person_input li
+    JOIN li_people p ON p.canonical_name = li.canonical_name
+    JOIN li_orgs   o ON o.canonical_name = li.org_canonical
+    RETURNING id
+)
+INSERT INTO person_identifiers (person_id, identifier_type, identifier_value, is_primary)
+SELECT p.id, 'linkedin_url', li.linkedin_url, TRUE
+FROM li_person_input li
+JOIN li_people p ON p.canonical_name = li.canonical_name;
+
 COMMIT;
 `
 
@@ -112,16 +155,20 @@ func main() {
 
 	// Report ACTUAL counts — a hardcoded message previously masked a bug
 	// where 0 emails were inserted yet the seed still claimed success.
-	var orgs, persons, emails int
+	var orgs, persons, emails, linkedin int
 	if err := pool.QueryRow(ctx, `SELECT
 		(SELECT count(*) FROM organizations WHERE canonical_name LIKE '%(devpod-fixture)'),
 		(SELECT count(*) FROM persons       WHERE canonical_name LIKE '%(devpod-fixture)'),
-		(SELECT count(*) FROM emails         WHERE verification_method = 'fixture')`,
-	).Scan(&orgs, &persons, &emails); err != nil {
+		(SELECT count(*) FROM emails         WHERE verification_method = 'fixture'),
+		(SELECT count(*) FROM person_identifiers pi
+		    JOIN persons p ON p.id = pi.person_id
+		    WHERE pi.identifier_type = 'linkedin_url'
+		      AND p.canonical_name LIKE '%(devpod-fixture)')`,
+	).Scan(&orgs, &persons, &emails, &linkedin); err != nil {
 		log.Fatal("seed count: ", err)
 	}
-	if emails == 0 {
-		log.Fatalf("seed: %d orgs + %d persons but 0 emails — fixture is broken", orgs, persons)
+	if emails == 0 || linkedin == 0 {
+		log.Fatalf("seed: %d orgs + %d persons but %d emails / %d linkedin prospects — fixture is broken", orgs, persons, emails, linkedin)
 	}
-	log.Printf("seed: %d orgs + %d persons + %d emails inserted", orgs, persons, emails)
+	log.Printf("seed: %d orgs + %d persons + %d emails + %d linkedin prospects inserted", orgs, persons, emails, linkedin)
 }
