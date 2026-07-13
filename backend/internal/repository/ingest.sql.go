@@ -519,6 +519,29 @@ func (q *Queries) FindPersonsByNormalizedName(ctx context.Context, queryName str
 	return items, nil
 }
 
+const getPersonIdentifier = `-- name: GetPersonIdentifier :one
+SELECT identifier_value
+FROM person_identifiers
+WHERE person_id = $1 AND identifier_type = $2
+LIMIT 1
+`
+
+type GetPersonIdentifierParams struct {
+	PersonID       pgtype.UUID `json:"person_id"`
+	IdentifierType string      `json:"identifier_type"`
+}
+
+// GetPersonIdentifier reads a single identifier value of a given type off a
+// person — the read side of the member-id cache (issue #5): given a person
+// and 'linkedin_member_id', it returns the cached Unipile member id, or
+// pgx.ErrNoRows on a miss (the signal to resolve upstream and persist).
+func (q *Queries) GetPersonIdentifier(ctx context.Context, arg GetPersonIdentifierParams) (string, error) {
+	row := q.db.QueryRow(ctx, getPersonIdentifier, arg.PersonID, arg.IdentifierType)
+	var identifier_value string
+	err := row.Scan(&identifier_value)
+	return identifier_value, err
+}
+
 const getRawIngestByChecksum = `-- name: GetRawIngestByChecksum :one
 SELECT id, source_id, file_url, ingested_at, checksum, size_bytes, meta FROM raw_ingests
 WHERE source_id = $1 AND checksum = $2

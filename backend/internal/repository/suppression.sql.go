@@ -134,7 +134,7 @@ func (q *Queries) HasHardBounceEvent(ctx context.Context, arg HasHardBounceEvent
 
 const insertUnsubscribeGlobal = `-- name: InsertUnsubscribeGlobal :exec
 INSERT INTO unsubscribes (tenant_id, email, reason)
-VALUES (NULL, $1, $2)
+VALUES (NULL, $1::text, $2)
 ON CONFLICT (COALESCE(tenant_id, '00000000-0000-0000-0000-000000000000'::uuid), lower(email)) DO NOTHING
 `
 
@@ -149,9 +149,31 @@ func (q *Queries) InsertUnsubscribeGlobal(ctx context.Context, arg InsertUnsubsc
 	return err
 }
 
+const insertUnsubscribePerson = `-- name: InsertUnsubscribePerson :exec
+INSERT INTO unsubscribes (tenant_id, person_id, reason)
+VALUES ($1, $2, $3)
+ON CONFLICT (COALESCE(tenant_id, '00000000-0000-0000-0000-000000000000'::uuid), person_id)
+    WHERE person_id IS NOT NULL
+    DO NOTHING
+`
+
+type InsertUnsubscribePersonParams struct {
+	TenantID pgtype.UUID `json:"tenant_id"`
+	PersonID pgtype.UUID `json:"person_id"`
+	Reason   string      `json:"reason"`
+}
+
+// Idempotent insert of a person-keyed suppression row (the LinkedIn rail —
+// prospects have no email). The partial-index predicate on the conflict
+// target tells Postgres which arbiter index to use.
+func (q *Queries) InsertUnsubscribePerson(ctx context.Context, arg InsertUnsubscribePersonParams) error {
+	_, err := q.db.Exec(ctx, insertUnsubscribePerson, arg.TenantID, arg.PersonID, arg.Reason)
+	return err
+}
+
 const insertUnsubscribeTenant = `-- name: InsertUnsubscribeTenant :exec
 INSERT INTO unsubscribes (tenant_id, email, reason)
-VALUES ($1, $2, $3)
+VALUES ($1, $2::text, $3)
 ON CONFLICT (COALESCE(tenant_id, '00000000-0000-0000-0000-000000000000'::uuid), lower(email)) DO NOTHING
 `
 
@@ -161,14 +183,17 @@ type InsertUnsubscribeTenantParams struct {
 	Reason   string      `json:"reason"`
 }
 
-// Idempotent insert of a tenant-scoped suppression row.
+// Idempotent insert of a tenant-scoped suppression row. The ::text cast
+// pins the email param to a non-null string even though the column is now
+// nullable (person rows carry no email) — keeps the email write path's Go
+// API unchanged.
 func (q *Queries) InsertUnsubscribeTenant(ctx context.Context, arg InsertUnsubscribeTenantParams) error {
 	_, err := q.db.Exec(ctx, insertUnsubscribeTenant, arg.TenantID, arg.Email, arg.Reason)
 	return err
 }
 
 const listUnsubscribesForTenant = `-- name: ListUnsubscribesForTenant :many
-SELECT id, tenant_id, email, reason, created_at FROM unsubscribes
+SELECT id, tenant_id, email, reason, created_at, person_id FROM unsubscribes
 WHERE tenant_id = $1
 ORDER BY created_at
 `
@@ -191,6 +216,7 @@ func (q *Queries) ListUnsubscribesForTenant(ctx context.Context, tenantID pgtype
 			&i.Email,
 			&i.Reason,
 			&i.CreatedAt,
+			&i.PersonID,
 		); err != nil {
 			return nil, err
 		}
@@ -235,6 +261,30 @@ func (q *Queries) LookupSuppression(ctx context.Context, arg LookupSuppressionPa
 	return reason, err
 }
 
+const lookupSuppressionByPerson = `-- name: LookupSuppressionByPerson :one
+SELECT reason
+FROM unsubscribes
+WHERE (tenant_id = $1 OR tenant_id IS NULL)
+  AND person_id = $2
+ORDER BY (tenant_id IS NULL) ASC
+LIMIT 1
+`
+
+type LookupSuppressionByPersonParams struct {
+	TenantID pgtype.UUID `json:"tenant_id"`
+	PersonID pgtype.UUID `json:"person_id"`
+}
+
+// Person-keyed analogue of LookupSuppression: returns the suppression
+// reason if (tenant_id, person_id) is suppressed, preferring a tenant row
+// over a global one. No bounce layers — LinkedIn has no bounces.
+func (q *Queries) LookupSuppressionByPerson(ctx context.Context, arg LookupSuppressionByPersonParams) (string, error) {
+	row := q.db.QueryRow(ctx, lookupSuppressionByPerson, arg.TenantID, arg.PersonID)
+	var reason string
+	err := row.Scan(&reason)
+	return reason, err
+}
+
 const markCampaignLeadReplied = `-- name: MarkCampaignLeadReplied :exec
 UPDATE campaign_leads
 SET status = 'replied', last_replied_at = NOW()
@@ -244,6 +294,25 @@ WHERE id = $1
 func (q *Queries) MarkCampaignLeadReplied(ctx context.Context, id pgtype.UUID) error {
 	_, err := q.db.Exec(ctx, markCampaignLeadReplied, id)
 	return err
+}
+
+const markLinkedInLeadReplied = `-- name: MarkLinkedInLeadReplied :one
+UPDATE campaign_leads
+SET status = 'replied', last_replied_at = NOW()
+WHERE id = $1 AND status <> 'replied'
+RETURNING id
+`
+
+// Idempotency gate for the LinkedIn reply path: flip the lead to 'replied'
+// only if it is not already, RETURNING its id. A replay (duplicate webhook,
+// or webhook + reconcile overlap) updates zero rows and yields no row, so
+// the caller writes no duplicate event or suppression. Flips from any
+// non-replied state (active / awaiting_accept / exhausted) so a late reply
+// still suppresses the person.
+func (q *Queries) MarkLinkedInLeadReplied(ctx context.Context, id pgtype.UUID) (pgtype.UUID, error) {
+	row := q.db.QueryRow(ctx, markLinkedInLeadReplied, id)
+	err := row.Scan(&id)
+	return id, err
 }
 
 const reactivateCampaignLead = `-- name: ReactivateCampaignLead :exec
@@ -293,5 +362,27 @@ func (q *Queries) ResolveCampaignLeadAddress(ctx context.Context, id pgtype.UUID
 	row := q.db.QueryRow(ctx, resolveCampaignLeadAddress, id)
 	var i ResolveCampaignLeadAddressRow
 	err := row.Scan(&i.TenantID, &i.Email)
+	return i, err
+}
+
+const resolveCampaignLeadPerson = `-- name: ResolveCampaignLeadPerson :one
+SELECT c.tenant_id, cl.person_id
+FROM campaign_leads cl
+JOIN campaigns c ON c.id = cl.campaign_id
+WHERE cl.id = $1
+`
+
+type ResolveCampaignLeadPersonRow struct {
+	TenantID pgtype.UUID `json:"tenant_id"`
+	PersonID pgtype.UUID `json:"person_id"`
+}
+
+// Returns (tenant_id, person_id) for a campaign_lead — the person analogue
+// of ResolveCampaignLeadAddress, used by the LinkedIn reply path to key the
+// person-scoped suppression row.
+func (q *Queries) ResolveCampaignLeadPerson(ctx context.Context, id pgtype.UUID) (ResolveCampaignLeadPersonRow, error) {
+	row := q.db.QueryRow(ctx, resolveCampaignLeadPerson, id)
+	var i ResolveCampaignLeadPersonRow
+	err := row.Scan(&i.TenantID, &i.PersonID)
 	return i, err
 }

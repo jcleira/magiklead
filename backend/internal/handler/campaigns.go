@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"unicode/utf8"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
@@ -11,6 +12,7 @@ import (
 
 	"github.com/jcleira/magiklead/backend/internal/repository"
 	"github.com/jcleira/magiklead/backend/internal/suppression"
+	"github.com/jcleira/magiklead/backend/internal/worker"
 	apierr "github.com/jcleira/magiklead/backend/pkg/errors"
 )
 
@@ -29,12 +31,19 @@ func NewCampaignHandler(q *repository.Queries, supp *suppression.Module) *Campai
 	return &CampaignHandler{queries: q, supp: supp}
 }
 
-// Create handles POST /api/v1/campaigns
+// Create handles POST /api/v1/campaigns. For an email campaign (the
+// default) it persists an empty sequence the onboarding flow fills in
+// later. For a LinkedIn campaign (channel='linkedin') it validates and
+// stores the authored linkedin_sequence: a step-0 connection note
+// (≤ worker.NoteCharLimit chars) plus at least one DM step. No sending
+// happens here — adding leads (AddLeads) queues them for the engine.
 func (h *CampaignHandler) Create(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		PlayID         string `json:"play_id"`
-		Name           string `json:"name"`
-		GmailAccountID string `json:"gmail_account_id,omitempty"`
+		PlayID           string                `json:"play_id"`
+		Name             string                `json:"name"`
+		GmailAccountID   string                `json:"gmail_account_id,omitempty"`
+		Channel          string                `json:"channel,omitempty"`
+		LinkedinSequence []worker.LinkedinStep `json:"linkedin_sequence,omitempty"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		apierr.WriteError(w, apierr.ErrBadRequest)
@@ -48,6 +57,30 @@ func (h *CampaignHandler) Create(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Channel routes the campaign to the email or LinkedIn rail; only
+	// the two known rails are accepted, defaulting to email so existing
+	// callers that omit it keep working.
+	channel := req.Channel
+	if channel == "" {
+		channel = "email"
+	}
+	if channel != "email" && channel != "linkedin" {
+		apierr.WriteError(w, apierr.APIError{Status: 400, Code: "bad_request", Message: "channel must be 'email' or 'linkedin'"})
+		return
+	}
+
+	// linkedinSeq is persisted as JSONB and stays nil for email
+	// campaigns. A LinkedIn campaign must carry a valid authored
+	// sequence before it can be created.
+	var linkedinSeq []byte
+	if channel == "linkedin" {
+		if apiErr := validateLinkedinSequence(req.LinkedinSequence); apiErr != nil {
+			apierr.WriteError(w, *apiErr)
+			return
+		}
+		linkedinSeq, _ = json.Marshal(req.LinkedinSequence)
+	}
+
 	var gmailID pgtype.UUID
 	if req.GmailAccountID != "" {
 		parsed, err := uuid.Parse(req.GmailAccountID)
@@ -57,12 +90,14 @@ func (h *CampaignHandler) Create(w http.ResponseWriter, r *http.Request) {
 	}
 
 	campaign, err := h.queries.CreateCampaign(r.Context(), repository.CreateCampaignParams{
-		TenantID:       pgUUID(tenantID),
-		PlayID:         pgUUID(playID),
-		Name:           req.Name,
-		Status:         pgtype.Text{String: "draft", Valid: true},
-		GmailAccountID: gmailID,
-		Sequence:       []byte("[]"),
+		TenantID:         pgUUID(tenantID),
+		PlayID:           pgUUID(playID),
+		Name:             req.Name,
+		Status:           pgtype.Text{String: "draft", Valid: true},
+		GmailAccountID:   gmailID,
+		Sequence:         []byte("[]"),
+		LinkedinSequence: linkedinSeq,
+		Channel:          channel,
 	})
 	if err != nil {
 		apierr.WriteError(w, apierr.APIError{Status: 500, Code: "internal_error", Message: err.Error()})
@@ -70,6 +105,20 @@ func (h *CampaignHandler) Create(w http.ResponseWriter, r *http.Request) {
 	}
 
 	apierr.WriteJSON(w, http.StatusCreated, campaign)
+}
+
+// validateLinkedinSequence enforces the LinkedIn authoring contract: a
+// step-0 connection note within LinkedIn's character cap, followed by
+// at least one DM step. Returns a non-nil 400 APIError describing the
+// first violation, or nil when the sequence is acceptable.
+func validateLinkedinSequence(steps []worker.LinkedinStep) *apierr.APIError {
+	if len(steps) < 2 {
+		return &apierr.APIError{Status: 400, Code: "bad_request", Message: "linkedin_sequence needs a connection note plus at least one DM step"}
+	}
+	if note := steps[0].Body; utf8.RuneCountInString(note) > worker.NoteCharLimit {
+		return &apierr.APIError{Status: 400, Code: "bad_request", Message: fmt.Sprintf("connection note exceeds %d characters", worker.NoteCharLimit)}
+	}
+	return nil
 }
 
 // List handles GET /api/v1/campaigns
@@ -108,6 +157,7 @@ func campaignToJSON(c repository.Campaign) map[string]any {
 		"play_id":           fmtUUID(c.PlayID),
 		"name":              c.Name,
 		"status":            c.Status.String,
+		"channel":           c.Channel,
 		"gmail_account_id":  fmtUUIDNullable(c.GmailAccountID),
 		"sequence":          seq,
 		"linkedin_sequence": linkedinSeq,
@@ -386,4 +436,54 @@ func (h *CampaignHandler) Metrics(w http.ResponseWriter, r *http.Request) {
 		"bounced_total":      bouncedTotal,
 		"unsubscribed_total": unsubscribedTotal,
 	})
+}
+
+// LinkedInMetrics handles GET /api/v1/campaigns/{id}/linkedin-metrics —
+// the data behind the per-campaign LinkedIn dashboard (issue #9). It
+// returns the engagement funnel derived from `linkedin_events`: invites
+// sent, accepted (+ acceptance rate), DMs sent, and replies (+ reply
+// rate). Rates are computed here rather than in SQL so the query stays a
+// pure count and the zero-denominator cases (no invites yet, no DMs yet)
+// resolve to 0 instead of dividing by zero.
+//
+// Tenant scope is enforced via GetCampaign, mirroring Metrics: a 404 for
+// a campaign under another tenant is indistinguishable from one that
+// does not exist, so the endpoint never confirms cross-tenant IDs.
+func (h *CampaignHandler) LinkedInMetrics(w http.ResponseWriter, r *http.Request) {
+	id, err := uuid.Parse(chi.URLParam(r, "id"))
+	if err != nil {
+		apierr.WriteError(w, apierr.ErrBadRequest)
+		return
+	}
+	tenantID := getTenantID(r.Context())
+	if _, err := h.queries.GetCampaign(r.Context(), repository.GetCampaignParams{ID: pgUUID(id), TenantID: pgUUID(tenantID)}); err != nil {
+		apierr.WriteError(w, apierr.ErrNotFound)
+		return
+	}
+
+	counts, err := h.queries.CountCampaignLinkedInEvents(r.Context(), pgUUID(id))
+	if err != nil {
+		apierr.WriteError(w, apierr.APIError{Status: 500, Code: "metrics_failed", Message: err.Error()})
+		return
+	}
+
+	apierr.WriteJSON(w, http.StatusOK, map[string]any{
+		"invites_sent":    counts.InvitesSent,
+		"accepted":        counts.Accepted,
+		"acceptance_rate": safeRate(counts.Accepted, counts.InvitesSent),
+		"dms_sent":        counts.DmsSent,
+		"replies":         counts.Replies,
+		"reply_rate":      safeRate(counts.Replies, counts.DmsSent),
+	})
+}
+
+// safeRate returns numerator/denominator as a fraction in [0,1], or 0
+// when the denominator is zero. Used for the LinkedIn acceptance rate
+// (accepted ÷ invites sent) and reply rate (replies ÷ DMs sent), where
+// an as-yet-unstarted campaign has zero in the denominator.
+func safeRate(numerator, denominator int64) float64 {
+	if denominator == 0 {
+		return 0
+	}
+	return float64(numerator) / float64(denominator)
 }

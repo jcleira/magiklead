@@ -34,12 +34,12 @@ const SoftBounceThreshold = 3
 // Reason values written to unsubscribes.reason. Callers should stick
 // to these; the column is free-text only for forward compatibility.
 const (
-	ReasonManual               = "manual"
-	ReasonListUnsubscribe      = "list-unsub"
-	ReasonSpamComplaint        = "spam-complaint"
-	ReasonReply                = "reply"
-	ReasonHardBounce           = "hard-bounce"
-	ReasonSoftBounceThreshold  = "soft-bounce-threshold"
+	ReasonManual              = "manual"
+	ReasonListUnsubscribe     = "list-unsub"
+	ReasonSpamComplaint       = "spam-complaint"
+	ReasonReply               = "reply"
+	ReasonHardBounce          = "hard-bounce"
+	ReasonSoftBounceThreshold = "soft-bounce-threshold"
 )
 
 // Module is the suppression deep module. Construct one per process
@@ -103,6 +103,80 @@ func (m *Module) IsSuppressed(ctx context.Context, tenantID uuid.UUID, email str
 	}
 
 	return false, "", nil
+}
+
+// IsSuppressedPerson is the person-keyed analogue of IsSuppressed for the
+// LinkedIn rail, where prospects have no email. It reports whether the
+// (tenantID, personID) pair must not be messaged, returning the reason
+// from unsubscribes.reason. LinkedIn has no bounce signals, so this reads
+// only the unsubscribes table (reply / manual). A nil personID is treated
+// as not suppressed.
+func (m *Module) IsSuppressedPerson(ctx context.Context, tenantID, personID uuid.UUID) (bool, string, error) {
+	if personID == uuid.Nil {
+		return false, "", nil
+	}
+	reason, err := m.q.LookupSuppressionByPerson(ctx, repository.LookupSuppressionByPersonParams{
+		TenantID: pgUUID(tenantID),
+		PersonID: pgUUID(personID),
+	})
+	if err == nil {
+		return true, reason, nil
+	}
+	if errors.Is(err, pgx.ErrNoRows) {
+		return false, "", nil
+	}
+	return false, "", fmt.Errorf("suppression: lookup person unsubscribe: %w", err)
+}
+
+// RecordReplyByPerson is the LinkedIn analogue of RecordReply: a prospect
+// replied to a DM, so halt the sequence and suppress the *person* (no
+// email exists). It is idempotent — the gated MarkLinkedInLeadReplied flips
+// the lead to 'replied' only if it is not already, so a replayed webhook or
+// a reconcile poll overlapping the webhook writes no duplicate event or
+// suppression row. On the first reply it writes a 'replied' linkedin_event
+// carrying the inbound message id and inserts a person-keyed unsubscribes
+// row so no further DM ever targets the prospect, across every campaign.
+func (m *Module) RecordReplyByPerson(ctx context.Context, campaignLeadID uuid.UUID, providerMessageID string) error {
+	lead := pgUUID(campaignLeadID)
+
+	// Idempotency gate. A no-row result means the lead was already replied —
+	// nothing left to do.
+	if _, err := m.q.MarkLinkedInLeadReplied(ctx, lead); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil
+		}
+		return fmt.Errorf("suppression: mark linkedin lead replied: %w", err)
+	}
+
+	who, err := m.q.ResolveCampaignLeadPerson(ctx, lead)
+	if err != nil {
+		return fmt.Errorf("suppression: resolve lead person: %w", err)
+	}
+
+	meta, err := json.Marshal(map[string]string{"unipile_message_id": providerMessageID})
+	if err != nil {
+		return fmt.Errorf("suppression: marshal metadata: %w", err)
+	}
+	if _, err := m.q.CreateLinkedInEvent(ctx, repository.CreateLinkedInEventParams{
+		CampaignLeadID:   lead,
+		EventType:        "replied",
+		Step:             0,
+		Metadata:         meta,
+		UnipileMessageID: pgText(providerMessageID),
+	}); err != nil {
+		return fmt.Errorf("suppression: write replied linkedin event: %w", err)
+	}
+
+	if who.PersonID.Valid && who.TenantID.Valid {
+		if err := m.q.InsertUnsubscribePerson(ctx, repository.InsertUnsubscribePersonParams{
+			TenantID: who.TenantID,
+			PersonID: who.PersonID,
+			Reason:   ReasonReply,
+		}); err != nil {
+			return fmt.Errorf("suppression: write reply person-unsubscribe: %w", err)
+		}
+	}
+	return nil
 }
 
 // RecordReply marks the campaign_lead as replied, writes a 'replied'

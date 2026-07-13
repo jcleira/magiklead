@@ -40,15 +40,20 @@ entrypoint runs `go run ./cmd/migrate` before handing control to air.
 
 The canonical `persons` graph is empty after migrations apply — the
 real ingest pipeline is operational (Phase 3 of the plan). For local
-testing the in-tree fixture loader inserts 5 organizations + 20
-persons + verified emails:
+testing the in-tree fixture loader inserts both channels' prospects:
+5 organizations + 20 persons with verified emails (email prospects),
+plus 2 organizations + 6 persons with `linkedin_url` identifiers and
+no email (LinkedIn prospects — what the LinkedIn-channel search
+returns):
 
 ```
 devpods exec api go run ./cmd/seed
 ```
 
 Idempotent: re-running clears prior fixtures by `(devpod-fixture)`
-suffix and replants them. Doesn't touch any non-fixture rows.
+suffix (cascade drops their identifiers + employments) and replants
+them. Doesn't touch any non-fixture rows. `devpods seed regenerate`
+bakes the same data into the local snapshot.
 
 ### Info files
 
@@ -96,6 +101,22 @@ suffix and replants them. Doesn't touch any non-fixture rows.
 - `UNSUBSCRIBE_MAIL_DOMAIN` — required by the worker. Bare hostname
   used in the mailto channel of List-Unsubscribe (e.g.
   `mail.magiklead.com`). See the operational gap below
+- `UNIPILE_API_KEY` (optional) — Unipile key for the LinkedIn send rail
+  (docs/2026-06-09-linkedin-only-outreach). Absent in dev: the LinkedIn
+  connect/send routes degrade like PDL — `GET /linkedin/auth-url`
+  returns 503 `linkedin_disabled` instead of crashing. A dev dummy value
+  is enough to exercise the connect gate + webhook locally
+- `UNIPILE_DSN` (optional) — the per-tenant Unipile API base URL /
+  subdomain (e.g. `https://api6.unipile.com:13443`). Used as the base
+  for hosted-auth + disconnect calls
+- `UNIPILE_WEBHOOK_SECRET` — required once `UNIPILE_API_KEY` is set (api
+  fails fast otherwise). HS256 key that does double duty: it signs the
+  `pkg/jwt` metadata token embedded in the hosted-auth link (which
+  Unipile echoes back on `account.connected`, binding the connected
+  account to the tenant) AND verifies the HMAC-SHA256 signature on the
+  inbound `/api/v1/webhooks/unipile` body. Keep it distinct from the
+  other signing secrets; any opaque 32+ byte string. The public webhook
+  returns 503 if it is unset and 401 on a bad signature
 
 `~/.config/devpods/magiklead/.env.frontend`:
 

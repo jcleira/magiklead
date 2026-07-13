@@ -19,20 +19,25 @@ type Campaign struct {
 	LinkedinSequence []byte             `json:"linkedin_sequence"`
 	Stats            []byte             `json:"stats"`
 	CreatedAt        pgtype.Timestamptz `json:"created_at"`
+	Channel          string             `json:"channel"`
 }
 
 type CampaignLead struct {
-	ID            pgtype.UUID        `json:"id"`
-	CampaignID    pgtype.UUID        `json:"campaign_id"`
-	LeadID        pgtype.UUID        `json:"lead_id"`
-	Status        pgtype.Text        `json:"status"`
-	CurrentStep   pgtype.Int4        `json:"current_step"`
-	NextSendAt    pgtype.Timestamptz `json:"next_send_at"`
-	LastSentAt    pgtype.Timestamptz `json:"last_sent_at"`
-	LastOpenedAt  pgtype.Timestamptz `json:"last_opened_at"`
-	LastRepliedAt pgtype.Timestamptz `json:"last_replied_at"`
-	CreatedAt     pgtype.Timestamptz `json:"created_at"`
-	PersonID      pgtype.UUID        `json:"person_id"`
+	ID                   pgtype.UUID        `json:"id"`
+	CampaignID           pgtype.UUID        `json:"campaign_id"`
+	LeadID               pgtype.UUID        `json:"lead_id"`
+	Status               pgtype.Text        `json:"status"`
+	CurrentStep          pgtype.Int4        `json:"current_step"`
+	NextSendAt           pgtype.Timestamptz `json:"next_send_at"`
+	LastSentAt           pgtype.Timestamptz `json:"last_sent_at"`
+	LastOpenedAt         pgtype.Timestamptz `json:"last_opened_at"`
+	LastRepliedAt        pgtype.Timestamptz `json:"last_replied_at"`
+	CreatedAt            pgtype.Timestamptz `json:"created_at"`
+	PersonID             pgtype.UUID        `json:"person_id"`
+	LinkedinAccountID    pgtype.UUID        `json:"linkedin_account_id"`
+	LinkedinInvitationID pgtype.Text        `json:"linkedin_invitation_id"`
+	LinkedinChatID       pgtype.Text        `json:"linkedin_chat_id"`
+	AcceptedAt           pgtype.Timestamptz `json:"accepted_at"`
 }
 
 type ConflictQueue struct {
@@ -166,6 +171,33 @@ type LeadSearch struct {
 	FetchedAt     pgtype.Timestamptz `json:"fetched_at"`
 	TtlDays       pgtype.Int4        `json:"ttl_days"`
 	CreatedAt     pgtype.Timestamptz `json:"created_at"`
+}
+
+type LinkedinAccount struct {
+	ID                    pgtype.UUID        `json:"id"`
+	TenantID              pgtype.UUID        `json:"tenant_id"`
+	UnipileAccountID      string             `json:"unipile_account_id"`
+	Status                string             `json:"status"`
+	WarmupStartedAt       pgtype.Timestamptz `json:"warmup_started_at"`
+	WeeklyInviteCount     int32              `json:"weekly_invite_count"`
+	WeeklyWindowStartedAt pgtype.Timestamptz `json:"weekly_window_started_at"`
+	DailyInviteCount      int32              `json:"daily_invite_count"`
+	DailyResetAt          pgtype.Timestamptz `json:"daily_reset_at"`
+	AcceptanceRate        float64            `json:"acceptance_rate"`
+	LastError             pgtype.Text        `json:"last_error"`
+	CreatedAt             pgtype.Timestamptz `json:"created_at"`
+	AcceptancePaused      bool               `json:"acceptance_paused"`
+}
+
+type LinkedinEvent struct {
+	ID               pgtype.UUID        `json:"id"`
+	CampaignLeadID   pgtype.UUID        `json:"campaign_lead_id"`
+	EventType        string             `json:"event_type"`
+	Step             int32              `json:"step"`
+	Metadata         []byte             `json:"metadata"`
+	UnipileMessageID pgtype.Text        `json:"unipile_message_id"`
+	UnipileChatID    pgtype.Text        `json:"unipile_chat_id"`
+	CreatedAt        pgtype.Timestamptz `json:"created_at"`
 }
 
 type LinkedinTask struct {
@@ -349,9 +381,10 @@ type TenantLead struct {
 type Unsubscribe struct {
 	ID        pgtype.UUID        `json:"id"`
 	TenantID  pgtype.UUID        `json:"tenant_id"`
-	Email     string             `json:"email"`
+	Email     pgtype.Text        `json:"email"`
 	Reason    string             `json:"reason"`
 	CreatedAt pgtype.Timestamptz `json:"created_at"`
+	PersonID  pgtype.UUID        `json:"person_id"`
 }
 
 type User struct {

@@ -316,6 +316,7 @@ function SearchTab() {
                   <th className="pb-3 pr-4 font-medium">Name</th>
                   <th className="pb-3 pr-4 font-medium">Title</th>
                   <th className="pb-3 pr-4 font-medium">Organization</th>
+                  <th className="pb-3 pr-4 font-medium">Profile</th>
                   <th className="pb-3 pr-4 font-medium">Email</th>
                   <th className="pb-3 font-medium"></th>
                 </tr>
@@ -340,6 +341,20 @@ function SearchTab() {
                           <span className="ml-2 text-xs text-slate-400">
                             {r.domain}
                           </span>
+                        )}
+                      </td>
+                      <td className="py-3 pr-4 text-sm">
+                        {r.linkedin_url ? (
+                          <a
+                            href={r.linkedin_url}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="font-medium text-sky-600 hover:text-sky-800 hover:underline"
+                          >
+                            LinkedIn ↗
+                          </a>
+                        ) : (
+                          <span className="text-slate-400">—</span>
                         )}
                       </td>
                       <td className="py-3 pr-4 text-sm">

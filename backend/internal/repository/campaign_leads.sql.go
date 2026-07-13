@@ -56,6 +56,41 @@ func (q *Queries) AddPersonToCampaign(ctx context.Context, arg AddPersonToCampai
 	return err
 }
 
+const advanceLinkedInDMStep = `-- name: AdvanceLinkedInDMStep :exec
+UPDATE campaign_leads
+SET current_step = $1,
+    next_send_at = $2,
+    status = $3,
+    linkedin_chat_id = COALESCE(NULLIF($4::text, ''), linkedin_chat_id),
+    last_sent_at = NOW()
+WHERE id = $5
+`
+
+type AdvanceLinkedInDMStepParams struct {
+	CurrentStep pgtype.Int4        `json:"current_step"`
+	NextSendAt  pgtype.Timestamptz `json:"next_send_at"`
+	Status      pgtype.Text        `json:"status"`
+	ChatID      string             `json:"chat_id"`
+	ID          pgtype.UUID        `json:"id"`
+}
+
+// AdvanceLinkedInDMStep moves a lead forward after a DM goes out, the
+// LinkedIn analogue of UpdateCampaignLeadStep. It records the chat id
+// the send returned (so later steps thread into the same chat — issue
+// #6) without clobbering an existing one when the param is empty, and
+// advances the step/schedule/status the worker computed (next step's
+// jittered delay, or 'exhausted' when the sequence is done).
+func (q *Queries) AdvanceLinkedInDMStep(ctx context.Context, arg AdvanceLinkedInDMStepParams) error {
+	_, err := q.db.Exec(ctx, advanceLinkedInDMStep,
+		arg.CurrentStep,
+		arg.NextSendAt,
+		arg.Status,
+		arg.ChatID,
+		arg.ID,
+	)
+	return err
+}
+
 const countCampaignLeadsByStatus = `-- name: CountCampaignLeadsByStatus :many
 SELECT status, COUNT(*) as count FROM campaign_leads
 WHERE campaign_id = $1
@@ -123,6 +158,7 @@ SELECT
     COALESCE(o.canonical_name, l.company, '')::text  AS company,
     COALESCE(ce.title, l.title)                      AS title
 FROM campaign_leads cl
+JOIN campaigns         c  ON c.id  = cl.campaign_id AND c.channel = 'email'
 LEFT JOIN leads         l  ON l.id  = cl.lead_id
 LEFT JOIN persons       p  ON p.id  = cl.person_id
 LEFT JOIN best          b  ON b.person_id = cl.person_id
@@ -157,6 +193,14 @@ type GetDueLeadsRow struct {
 // For the canonical path we pull the best email per person (verified
 // wins, then fewest bounces, then oldest) and the current employment
 // for title/company.
+//
+// The channel='email' guard keeps the email send loop off LinkedIn
+// campaigns. It matters from issue #5 on: an accepted LinkedIn lead
+// goes status='active' + next_send_at=NOW() (so the LinkedIn DM tick
+// picks it up), which would otherwise also match this query — and the
+// email sender, finding no email for a LinkedIn-only person, would
+// wrongly mark it 'exhausted'. The two rails select disjoint leads by
+// their campaign channel.
 func (q *Queries) GetDueLeads(ctx context.Context, limit int32) ([]GetDueLeadsRow, error) {
 	rows, err := q.db.Query(ctx, getDueLeads, limit)
 	if err != nil {
@@ -180,6 +224,319 @@ func (q *Queries) GetDueLeads(ctx context.Context, limit int32) ([]GetDueLeadsRo
 			&i.Company,
 			&i.Title,
 		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const getDueLinkedInDMLeads = `-- name: GetDueLinkedInDMLeads :many
+WITH current_emp AS (
+    SELECT DISTINCT ON (emp.person_id)
+        emp.person_id,
+        emp.title,
+        emp.organization_id
+    FROM employments emp
+    WHERE emp.is_current = TRUE
+    ORDER BY emp.person_id, emp.start_date DESC NULLS LAST
+), li AS (
+    SELECT DISTINCT ON (pi.person_id)
+        pi.person_id,
+        pi.identifier_value AS linkedin_url
+    FROM person_identifiers pi
+    WHERE pi.identifier_type = 'linkedin_url'
+    ORDER BY pi.person_id
+)
+SELECT
+    cl.id,
+    cl.campaign_id,
+    cl.person_id,
+    cl.current_step,
+    cl.linkedin_chat_id,
+    c.tenant_id,
+    la.unipile_account_id,
+    COALESCE(li.linkedin_url, '')::text  AS linkedin_url,
+    COALESCE(p.first_name, '')::text     AS first_name,
+    COALESCE(p.last_name,  '')::text     AS last_name,
+    COALESCE(o.canonical_name, '')::text AS company,
+    ce.title                             AS title
+FROM campaign_leads cl
+JOIN campaigns         c  ON c.id  = cl.campaign_id AND c.channel = 'linkedin'
+JOIN linkedin_accounts la ON la.id = cl.linkedin_account_id
+LEFT JOIN persons       p  ON p.id  = cl.person_id
+LEFT JOIN current_emp   ce ON ce.person_id = cl.person_id
+LEFT JOIN organizations o  ON o.id = ce.organization_id
+LEFT JOIN li               ON li.person_id = cl.person_id
+WHERE cl.status = 'active'
+  AND cl.current_step >= 1
+  AND cl.next_send_at <= NOW()
+  AND la.status IN ('active', 'warming')
+ORDER BY cl.next_send_at
+LIMIT $1
+`
+
+type GetDueLinkedInDMLeadsRow struct {
+	ID               pgtype.UUID `json:"id"`
+	CampaignID       pgtype.UUID `json:"campaign_id"`
+	PersonID         pgtype.UUID `json:"person_id"`
+	CurrentStep      pgtype.Int4 `json:"current_step"`
+	LinkedinChatID   pgtype.Text `json:"linkedin_chat_id"`
+	TenantID         pgtype.UUID `json:"tenant_id"`
+	UnipileAccountID string      `json:"unipile_account_id"`
+	LinkedinUrl      string      `json:"linkedin_url"`
+	FirstName        string      `json:"first_name"`
+	LastName         string      `json:"last_name"`
+	Company          string      `json:"company"`
+	Title            pgtype.Text `json:"title"`
+}
+
+// GetDueLinkedInDMLeads selects accepted LinkedIn leads due for their
+// next direct message: active, past step 0, and due now. The lead is
+// already bound (issue #4/#5) to the account that sent its invite, so we
+// INNER JOIN linkedin_accounts to carry that account's unipile id — the
+// DM goes from the same account, into the same relationship. A lead whose
+// account was disconnected (linkedin_account_id nulled via ON DELETE SET
+// NULL) drops out of the join and is simply not messaged, which is the
+// safe direction. The la.status filter extends that pause to a restricted
+// or disconnected (but not yet row-deleted) account (issue #8): its
+// in-flight DM leads are held until it reconnects to active/warming, the
+// same health predicate pickLinkedInAccount applies on the invite tick.
+// linkedin_chat_id is NULL for the first DM (no chat exists until we start
+// one) and set thereafter. Recipient + name/title/company are resolved for
+// personalization, mirroring the invite query.
+func (q *Queries) GetDueLinkedInDMLeads(ctx context.Context, limit int32) ([]GetDueLinkedInDMLeadsRow, error) {
+	rows, err := q.db.Query(ctx, getDueLinkedInDMLeads, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []GetDueLinkedInDMLeadsRow{}
+	for rows.Next() {
+		var i GetDueLinkedInDMLeadsRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.CampaignID,
+			&i.PersonID,
+			&i.CurrentStep,
+			&i.LinkedinChatID,
+			&i.TenantID,
+			&i.UnipileAccountID,
+			&i.LinkedinUrl,
+			&i.FirstName,
+			&i.LastName,
+			&i.Company,
+			&i.Title,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const getDueLinkedInInviteLeads = `-- name: GetDueLinkedInInviteLeads :many
+WITH current_emp AS (
+    SELECT DISTINCT ON (emp.person_id)
+        emp.person_id,
+        emp.title,
+        emp.organization_id
+    FROM employments emp
+    WHERE emp.is_current = TRUE
+    ORDER BY emp.person_id, emp.start_date DESC NULLS LAST
+), li AS (
+    SELECT DISTINCT ON (pi.person_id)
+        pi.person_id,
+        pi.identifier_value AS linkedin_url
+    FROM person_identifiers pi
+    WHERE pi.identifier_type = 'linkedin_url'
+    ORDER BY pi.person_id
+)
+SELECT
+    cl.id,
+    cl.campaign_id,
+    cl.person_id,
+    cl.current_step,
+    c.tenant_id,
+    COALESCE(li.linkedin_url, '')::text  AS linkedin_url,
+    COALESCE(p.first_name, '')::text     AS first_name,
+    COALESCE(p.last_name,  '')::text     AS last_name,
+    COALESCE(o.canonical_name, '')::text AS company,
+    ce.title                             AS title
+FROM campaign_leads cl
+JOIN campaigns        c  ON c.id  = cl.campaign_id AND c.channel = 'linkedin'
+LEFT JOIN persons       p  ON p.id  = cl.person_id
+LEFT JOIN current_emp   ce ON ce.person_id = cl.person_id
+LEFT JOIN organizations o  ON o.id = ce.organization_id
+LEFT JOIN li               ON li.person_id = cl.person_id
+WHERE cl.current_step = 0
+  AND cl.status IN ('queued', 'active')
+  AND (cl.next_send_at IS NULL OR cl.next_send_at <= NOW())
+ORDER BY cl.created_at
+LIMIT $1
+`
+
+type GetDueLinkedInInviteLeadsRow struct {
+	ID          pgtype.UUID `json:"id"`
+	CampaignID  pgtype.UUID `json:"campaign_id"`
+	PersonID    pgtype.UUID `json:"person_id"`
+	CurrentStep pgtype.Int4 `json:"current_step"`
+	TenantID    pgtype.UUID `json:"tenant_id"`
+	LinkedinUrl string      `json:"linkedin_url"`
+	FirstName   string      `json:"first_name"`
+	LastName    string      `json:"last_name"`
+	Company     string      `json:"company"`
+	Title       pgtype.Text `json:"title"`
+}
+
+// GetDueLinkedInInviteLeads selects step-0 (connection-invite) leads for
+// LinkedIn campaigns that are ready to send now. A lead qualifies while
+// it is still at step 0 and either queued (never launched-activated) or
+// active+due — the LinkedIn launch path runs ActivateCampaignLeads just
+// like email, so both states appear. The recipient identifier is the
+// person's canonical linkedin_url; name/title/company are resolved for
+// note personalization (no email join — the LinkedIn rail never touches
+// emails). tenant_id rides along so the tick can pick the tenant's
+// connected account. Mirrors GetDueLeads's CTE shape.
+func (q *Queries) GetDueLinkedInInviteLeads(ctx context.Context, limit int32) ([]GetDueLinkedInInviteLeadsRow, error) {
+	rows, err := q.db.Query(ctx, getDueLinkedInInviteLeads, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []GetDueLinkedInInviteLeadsRow{}
+	for rows.Next() {
+		var i GetDueLinkedInInviteLeadsRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.CampaignID,
+			&i.PersonID,
+			&i.CurrentStep,
+			&i.TenantID,
+			&i.LinkedinUrl,
+			&i.FirstName,
+			&i.LastName,
+			&i.Company,
+			&i.Title,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const getLinkedInAwaitingAcceptByAccount = `-- name: GetLinkedInAwaitingAcceptByAccount :many
+SELECT
+    cl.id,
+    pi.identifier_value AS member_id
+FROM campaign_leads cl
+JOIN person_identifiers pi
+    ON pi.person_id = cl.person_id
+   AND pi.identifier_type = 'linkedin_member_id'
+WHERE cl.status = 'awaiting_accept'
+  AND cl.linkedin_account_id = $1
+`
+
+type GetLinkedInAwaitingAcceptByAccountRow struct {
+	ID       pgtype.UUID `json:"id"`
+	MemberID string      `json:"member_id"`
+}
+
+// GetLinkedInAwaitingAcceptByAccount returns the awaiting_accept leads for
+// one connected account paired with the prospect's cached Unipile member id
+// (issue #7) — the accept matcher's input. Each ~45-min reconcile lists the
+// account's current connections and flips every awaiting lead whose member id
+// now appears in that set. Only leads whose person already has a cached
+// linkedin_member_id identifier (resolved at invite time — issue #5) are
+// addressable, so the join is inner; a lead with no cached id simply waits.
+// Scoped to the lead's bound account so one account's connections never flip
+// another account's leads.
+func (q *Queries) GetLinkedInAwaitingAcceptByAccount(ctx context.Context, accountID pgtype.UUID) ([]GetLinkedInAwaitingAcceptByAccountRow, error) {
+	rows, err := q.db.Query(ctx, getLinkedInAwaitingAcceptByAccount, accountID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []GetLinkedInAwaitingAcceptByAccountRow{}
+	for rows.Next() {
+		var i GetLinkedInAwaitingAcceptByAccountRow
+		if err := rows.Scan(&i.ID, &i.MemberID); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const getLinkedInLeadByChatID = `-- name: GetLinkedInLeadByChatID :one
+SELECT id FROM campaign_leads
+WHERE linkedin_chat_id = $1::text
+LIMIT 1
+`
+
+// GetLinkedInLeadByChatID maps a Unipile chat back to the campaign_lead it
+// belongs to — the key the inbound-message webhook and the reconcile poll
+// both use to attribute a reply. The chat id is recorded on the lead by the
+// first DM (issue #5). Returns no row for an unknown chat (a safe no-op).
+func (q *Queries) GetLinkedInLeadByChatID(ctx context.Context, chatID string) (pgtype.UUID, error) {
+	row := q.db.QueryRow(ctx, getLinkedInLeadByChatID, chatID)
+	var id pgtype.UUID
+	err := row.Scan(&id)
+	return id, err
+}
+
+const getStaleLinkedInInvites = `-- name: GetStaleLinkedInInvites :many
+SELECT
+    cl.id,
+    cl.linkedin_invitation_id,
+    la.unipile_account_id
+FROM campaign_leads cl
+JOIN linkedin_accounts la ON la.id = cl.linkedin_account_id
+WHERE cl.status = 'awaiting_accept'
+  AND cl.linkedin_invitation_id IS NOT NULL
+  AND cl.last_sent_at < NOW() - INTERVAL '21 days'
+ORDER BY cl.last_sent_at
+LIMIT $1
+`
+
+type GetStaleLinkedInInvitesRow struct {
+	ID                   pgtype.UUID `json:"id"`
+	LinkedinInvitationID pgtype.Text `json:"linkedin_invitation_id"`
+	UnipileAccountID     string      `json:"unipile_account_id"`
+}
+
+// GetStaleLinkedInInvites returns connection invites that have sat
+// unaccepted past the withdrawal horizon (issue #7): LinkedIn leads still
+// parked awaiting_accept whose invite was sent more than 21 days ago
+// (last_sent_at is stamped at send by MarkLinkedInInviteSent and untouched
+// while parked, so it is the invite-sent time). It carries the Unipile
+// invitation id to cancel and the account's unipile id to cancel it from.
+// A lead whose account was disconnected (linkedin_account_id nulled via ON
+// DELETE SET NULL) drops out of the join — there is nothing to withdraw
+// from. LIMIT bounds each sweep.
+func (q *Queries) GetStaleLinkedInInvites(ctx context.Context, limit int32) ([]GetStaleLinkedInInvitesRow, error) {
+	rows, err := q.db.Query(ctx, getStaleLinkedInInvites, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []GetStaleLinkedInInvitesRow{}
+	for rows.Next() {
+		var i GetStaleLinkedInInvitesRow
+		if err := rows.Scan(&i.ID, &i.LinkedinInvitationID, &i.UnipileAccountID); err != nil {
 			return nil, err
 		}
 		items = append(items, i)
@@ -300,7 +657,7 @@ func (q *Queries) ListCampaignLeads(ctx context.Context, campaignID pgtype.UUID)
 }
 
 const listCampaignLeadsForExport = `-- name: ListCampaignLeadsForExport :many
-SELECT cl.id, cl.campaign_id, cl.lead_id, cl.status, cl.current_step, cl.next_send_at, cl.last_sent_at, cl.last_opened_at, cl.last_replied_at, cl.created_at, cl.person_id
+SELECT cl.id, cl.campaign_id, cl.lead_id, cl.status, cl.current_step, cl.next_send_at, cl.last_sent_at, cl.last_opened_at, cl.last_replied_at, cl.created_at, cl.person_id, cl.linkedin_account_id, cl.linkedin_invitation_id, cl.linkedin_chat_id, cl.accepted_at
 FROM campaign_leads cl
 JOIN campaigns c ON c.id = cl.campaign_id
 WHERE c.tenant_id = $1
@@ -332,6 +689,10 @@ func (q *Queries) ListCampaignLeadsForExport(ctx context.Context, tenantID pgtyp
 			&i.LastRepliedAt,
 			&i.CreatedAt,
 			&i.PersonID,
+			&i.LinkedinAccountID,
+			&i.LinkedinInvitationID,
+			&i.LinkedinChatID,
+			&i.AcceptedAt,
 		); err != nil {
 			return nil, err
 		}
@@ -359,6 +720,146 @@ func (q *Queries) MarkCampaignLeadBounced(ctx context.Context, id pgtype.UUID) e
 	return err
 }
 
+const markLinkedInAccepted = `-- name: MarkLinkedInAccepted :one
+UPDATE campaign_leads
+SET status = 'active',
+    accepted_at = NOW(),
+    next_send_at = NOW(),
+    current_step = 1
+WHERE linkedin_invitation_id = $1::text
+  AND status = 'awaiting_accept'
+RETURNING id
+`
+
+// MarkLinkedInAccepted is issue #5's acceptance transition: a parked
+// invite (awaiting_accept) becomes a live conversation. It flips the
+// lead to active, stamps accepted_at, schedules the first DM now
+// (next_send_at=NOW()) and moves to step 1 so the DM tick picks it up.
+// The WHERE gate on status='awaiting_accept' makes it idempotent: a
+// replayed acceptance webhook (or one for an already-advanced lead)
+// updates zero rows and RETURNING yields no row, so the caller writes
+// no duplicate 'accepted' event. The $1::text cast pins the param to a
+// plain string. Matched by the Unipile invitation id bound at send time.
+func (q *Queries) MarkLinkedInAccepted(ctx context.Context, invitationID string) (pgtype.UUID, error) {
+	row := q.db.QueryRow(ctx, markLinkedInAccepted, invitationID)
+	var id pgtype.UUID
+	err := row.Scan(&id)
+	return id, err
+}
+
+const markLinkedInAcceptedByMember = `-- name: MarkLinkedInAcceptedByMember :many
+UPDATE campaign_leads cl
+SET status = 'active',
+    accepted_at = NOW(),
+    next_send_at = NOW(),
+    current_step = 1
+FROM person_identifiers pi
+WHERE pi.person_id = cl.person_id
+  AND pi.identifier_type = 'linkedin_member_id'
+  AND pi.identifier_value = $1::text
+  AND cl.linkedin_account_id = $2
+  AND cl.status = 'awaiting_accept'
+RETURNING cl.id
+`
+
+type MarkLinkedInAcceptedByMemberParams struct {
+	MemberID  string      `json:"member_id"`
+	AccountID pgtype.UUID `json:"account_id"`
+}
+
+// MarkLinkedInAcceptedByMember is issue #7's acceptance transition, keyed on
+// the Unipile member id the connections check matched rather than the
+// invitation id the (slow, 8-hour-lagged) notification carries. It flips
+// every awaiting_accept lead whose person owns member_id and whose invite was
+// sent from account_id: status→active, accepted_at stamped, first DM
+// scheduled now (next_send_at=NOW(), current_step=1) so the DM tick picks it
+// up. The awaiting_accept gate makes it idempotent — a re-run over an
+// already-flipped lead matches zero rows and RETURNING yields nothing, so the
+// caller writes no duplicate 'accepted' event. Scoped to account_id so a
+// member connected on one account never flips a lead bound to another.
+// RETURNING is :many because one person (member ids are unique) may sit in
+// more than one campaign against the same account; each returned lead gets
+// its own accepted event.
+func (q *Queries) MarkLinkedInAcceptedByMember(ctx context.Context, arg MarkLinkedInAcceptedByMemberParams) ([]pgtype.UUID, error) {
+	rows, err := q.db.Query(ctx, markLinkedInAcceptedByMember, arg.MemberID, arg.AccountID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []pgtype.UUID{}
+	for rows.Next() {
+		var id pgtype.UUID
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		items = append(items, id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const markLinkedInFailed = `-- name: MarkLinkedInFailed :exec
+UPDATE campaign_leads
+SET status = 'failed'
+WHERE id = $1
+`
+
+// MarkLinkedInFailed closes a lead the resolver could not turn into a Unipile
+// member id for a permanent reason — the prospect's profile is gone, private,
+// or otherwise unresolvable (issue #5). 'failed' is a terminal free-text
+// status (no migration — the column has no enum) that drops the lead out of
+// every due query, so it is never retried. Transient resolve failures do NOT
+// come here: they leave the lead queued for the next tick.
+func (q *Queries) MarkLinkedInFailed(ctx context.Context, id pgtype.UUID) error {
+	_, err := q.db.Exec(ctx, markLinkedInFailed, id)
+	return err
+}
+
+const markLinkedInInviteSent = `-- name: MarkLinkedInInviteSent :exec
+UPDATE campaign_leads
+SET status = 'awaiting_accept',
+    next_send_at = NULL,
+    last_sent_at = NOW(),
+    linkedin_account_id = $2,
+    linkedin_invitation_id = $3
+WHERE id = $1
+`
+
+type MarkLinkedInInviteSentParams struct {
+	ID                   pgtype.UUID `json:"id"`
+	LinkedinAccountID    pgtype.UUID `json:"linkedin_account_id"`
+	LinkedinInvitationID pgtype.Text `json:"linkedin_invitation_id"`
+}
+
+// MarkLinkedInInviteSent parks a lead waiting for acceptance after its
+// step-0 invite goes out: status='awaiting_accept', next_send_at cleared
+// (acceptance, not a timer, advances it — issue #5), and the account +
+// Unipile invitation bound for reconciliation. current_step stays 0; the
+// first DM is step 1 and is scheduled only once the invite is accepted.
+func (q *Queries) MarkLinkedInInviteSent(ctx context.Context, arg MarkLinkedInInviteSentParams) error {
+	_, err := q.db.Exec(ctx, markLinkedInInviteSent, arg.ID, arg.LinkedinAccountID, arg.LinkedinInvitationID)
+	return err
+}
+
+const markLinkedInNotAccepted = `-- name: MarkLinkedInNotAccepted :exec
+UPDATE campaign_leads
+SET status = 'not_accepted'
+WHERE id = $1 AND status = 'awaiting_accept'
+`
+
+// MarkLinkedInNotAccepted closes a lead whose connection invite was
+// withdrawn after going unaccepted past the horizon (issue #7):
+// status='not_accepted', a terminal state that drops it out of every due
+// query. The awaiting_accept guard makes it idempotent and avoids a race
+// with a late acceptance — if the invite was accepted between the sweep's
+// SELECT and this UPDATE, the row is already 'active' and we leave it be.
+func (q *Queries) MarkLinkedInNotAccepted(ctx context.Context, id pgtype.UUID) error {
+	_, err := q.db.Exec(ctx, markLinkedInNotAccepted, id)
+	return err
+}
+
 const pauseCampaignLeads = `-- name: PauseCampaignLeads :exec
 UPDATE campaign_leads SET next_send_at = NULL
 WHERE campaign_id = $1 AND status = 'active'
@@ -366,6 +867,21 @@ WHERE campaign_id = $1 AND status = 'active'
 
 func (q *Queries) PauseCampaignLeads(ctx context.Context, campaignID pgtype.UUID) error {
 	_, err := q.db.Exec(ctx, pauseCampaignLeads, campaignID)
+	return err
+}
+
+const suppressLinkedInLead = `-- name: SuppressLinkedInLead :exec
+UPDATE campaign_leads
+SET status = 'suppressed'
+WHERE id = $1
+`
+
+// SuppressLinkedInLead halts a lead the DM tick's person-suppression gate
+// caught (the person replied or unsubscribed via another campaign_lead).
+// status='suppressed' drops it out of GetDueLinkedInDMLeads (which filters
+// status='active'), the LinkedIn analogue of the sender's suppressed flip.
+func (q *Queries) SuppressLinkedInLead(ctx context.Context, id pgtype.UUID) error {
+	_, err := q.db.Exec(ctx, suppressLinkedInLead, id)
 	return err
 }
 

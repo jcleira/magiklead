@@ -12,6 +12,7 @@ interface Campaign {
   play_id: string;
   sequence: unknown;
   gmail_account_id: string | null;
+  channel: string;
   stats: unknown;
   created_at: string;
 }
@@ -45,6 +46,23 @@ interface CampaignMetrics {
   replied_total: number;
   bounced_total: number;
   unsubscribed_total: number;
+}
+
+interface LinkedInCampaignMetrics {
+  invites_sent: number;
+  accepted: number;
+  acceptance_rate: number;
+  dms_sent: number;
+  replies: number;
+  reply_rate: number;
+}
+
+interface LinkedInCapacity {
+  connected: boolean;
+  status?: string;
+  weekly_cap?: number;
+  weekly_used?: number;
+  weekly_remaining?: number;
 }
 
 const statusColor: Record<string, string> = {
@@ -326,8 +344,15 @@ export default function CampaignDetailPage() {
 
       {/* Per-campaign metrics — shown when not draft. Self-contained so
           the 15s poll only re-renders this block; everything below stays
-          static. */}
-      {!isDraft && <MetricsSection campaignId={id} />}
+          static. LinkedIn campaigns get the connection→acceptance→DM→reply
+          funnel + weekly invite capacity (issue #9); email campaigns keep
+          the original sent/replied/bounced dashboard. */}
+      {!isDraft &&
+        (campaign?.channel === "linkedin" ? (
+          <LinkedInMetricsSection campaignId={id} />
+        ) : (
+          <MetricsSection campaignId={id} />
+        ))}
 
       {/* Leads Table */}
       {hasLeads && (
@@ -852,6 +877,126 @@ function MetricsSection({ campaignId }: { campaignId: string }) {
           </table>
         </div>
       )}
+    </div>
+  );
+}
+
+// LinkedInMetricsSection is the LinkedIn analogue of MetricsSection
+// (issue #9): the per-campaign engagement funnel (invites → accepted →
+// DMs → replies) with the acceptance and reply rates, plus the connected
+// account's remaining weekly invite capacity. Same self-contained 15s
+// polling lifecycle, paused while the tab is hidden. It polls two
+// endpoints — per-campaign metrics and the tenant-level capacity — and
+// renders whichever has arrived.
+function LinkedInMetricsSection({ campaignId }: { campaignId: string }) {
+  const { apiFetch } = useApi();
+  const [metrics, setMetrics] = useState<LinkedInCampaignMetrics | null>(null);
+  const [capacity, setCapacity] = useState<LinkedInCapacity | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    const fetchAll = () => {
+      apiFetch<LinkedInCampaignMetrics>(`/api/v1/campaigns/${campaignId}/linkedin-metrics`)
+        .then((m) => { if (!cancelled) setMetrics(m); })
+        .catch(() => {});
+      apiFetch<LinkedInCapacity>(`/api/v1/linkedin/capacity`)
+        .then((c) => { if (!cancelled) setCapacity(c); })
+        .catch(() => {});
+    };
+    fetchAll();
+    let interval: number | null = window.setInterval(fetchAll, 15000);
+    const onVisibility = () => {
+      if (document.hidden) {
+        if (interval !== null) { window.clearInterval(interval); interval = null; }
+      } else {
+        if (interval === null) {
+          fetchAll();
+          interval = window.setInterval(fetchAll, 15000);
+        }
+      }
+    };
+    document.addEventListener("visibilitychange", onVisibility);
+    return () => {
+      cancelled = true;
+      if (interval !== null) window.clearInterval(interval);
+      document.removeEventListener("visibilitychange", onVisibility);
+    };
+  }, [apiFetch, campaignId]);
+
+  if (!metrics) {
+    return (
+      <div className="mt-8 grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+        {[0, 1, 2, 3].map((i) => (
+          <div key={i} className="h-20 animate-pulse rounded-xl bg-slate-100" />
+        ))}
+      </div>
+    );
+  }
+
+  const pct = (r: number) => `${Math.round(r * 100)}%`;
+
+  const cards: { label: string; value: number; sub?: string; tone: string }[] = [
+    { label: "Invites sent", value: metrics.invites_sent, tone: "text-slate-900" },
+    { label: "Accepted",     value: metrics.accepted,     sub: `${pct(metrics.acceptance_rate)} acceptance rate`, tone: "text-emerald-700" },
+    { label: "DMs sent",     value: metrics.dms_sent,     tone: "text-slate-900" },
+    { label: "Replied",      value: metrics.replies,      sub: `${pct(metrics.reply_rate)} reply rate`,           tone: "text-blue-700" },
+  ];
+
+  return (
+    <div className="mt-8">
+      <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+        {cards.map((c) => (
+          <div key={c.label} className="rounded-xl border border-slate-200 p-4">
+            <p className="text-xs text-slate-500">{c.label}</p>
+            <p className={`mt-1 text-2xl font-bold ${c.tone}`}>{c.value}</p>
+            {c.sub && <p className="mt-1 text-xs font-medium text-slate-400">{c.sub}</p>}
+          </div>
+        ))}
+      </div>
+
+      <LinkedInCapacityIndicator capacity={capacity} />
+    </div>
+  );
+}
+
+// LinkedInCapacityIndicator renders the connected account's remaining
+// weekly invite headroom (cap − used, respecting the warmup ramp) as a
+// labelled progress bar. A thin skeleton shows until the capacity read
+// lands; with no account connected it nudges the user to connect one. A
+// non-active account status (warming / restricted) is flagged distinctly
+// so an empty bar reads as "throttled," not "out of budget."
+function LinkedInCapacityIndicator({ capacity }: { capacity: LinkedInCapacity | null }) {
+  if (!capacity) {
+    return <div className="mt-6 h-16 animate-pulse rounded-xl bg-slate-100" />;
+  }
+  if (!capacity.connected) {
+    return (
+      <div className="mt-6 rounded-xl border border-dashed border-slate-300 p-5 text-sm text-slate-500">
+        Connect a LinkedIn account to track weekly invite capacity.
+      </div>
+    );
+  }
+  const cap = capacity.weekly_cap ?? 0;
+  const used = capacity.weekly_used ?? 0;
+  const remaining = capacity.weekly_remaining ?? 0;
+  const usedPct = cap > 0 ? Math.min(100, Math.round((used / cap) * 100)) : 0;
+  return (
+    <div className="mt-6 rounded-xl border border-slate-200 p-5">
+      <div className="flex items-baseline justify-between">
+        <h3 className="text-sm font-semibold text-slate-700">Weekly invite capacity</h3>
+        {capacity.status && capacity.status !== "active" && (
+          <span className="rounded-full bg-amber-100 px-2 py-0.5 text-xs font-medium capitalize text-amber-700">
+            {capacity.status}
+          </span>
+        )}
+      </div>
+      <p className="mt-1 text-2xl font-bold text-slate-900">
+        {remaining} <span className="text-sm font-normal text-slate-400">of {cap} remaining</span>
+      </p>
+      <div className="mt-3 h-2 w-full overflow-hidden rounded-full bg-slate-100">
+        <div className="h-full rounded-full bg-indigo-500" style={{ width: `${usedPct}%` }} />
+      </div>
+      <p className="mt-2 text-xs text-slate-400">{used} sent this week</p>
     </div>
   );
 }

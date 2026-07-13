@@ -27,23 +27,23 @@ End-to-end:
 
 ## Acceptance criteria
 
-- [ ] New `FindPersonByIdentifier(identifier_type, identifier_value)`
+- [x] New `FindPersonByIdentifier(identifier_type, identifier_value)`
   query (the PDL path hard-codes `pdl_id`); used to dedup on
   `linkedin_url`.
-- [ ] `leads/linkedin_search` behind a `Doer` seam; a stubbed response
+- [x] `leads/linkedin_search` behind a `Doer` seam; a stubbed response
   of N profiles writes through N persons + N `linkedin_url` identifiers
   + their orgs/employments; assert via DB.
-- [ ] Re-ingesting the same LinkedIn URL updates in place — one person,
+- [x] Re-ingesting the same LinkedIn URL updates in place — one person,
   one identifier (unique on `person_identifiers.identifier_value`);
   assert no duplicate rows.
-- [ ] No `emails` row is ever created by this path; assert via DB.
-- [ ] Demo mode (scraper.go source) produces canonical persons with
+- [x] No `emails` row is ever created by this path; assert via DB.
+- [x] Demo mode (scraper.go source) produces canonical persons with
   `linkedin_url` identifiers using only HTTP to company sites — no
   RapidAPI key; runnable in the devpod (a small `cmd/` or extend
   `cmd/seed`).
-- [ ] `POST /api/v1/leads/search` returns LinkedIn-sourced prospects
+- [x] `POST /api/v1/leads/search` returns LinkedIn-sourced prospects
   (name/title/company/linkedin_url); `with_email` is not required.
-- [ ] Leads UI lists LinkedIn prospects with a profile link, no email
+- [x] Leads UI lists LinkedIn prospects with a profile link, no email
   column.
 
 ## Modules touched

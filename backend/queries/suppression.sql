@@ -19,16 +19,61 @@ ORDER BY (tenant_id IS NULL) ASC
 LIMIT 1;
 
 -- name: InsertUnsubscribeTenant :exec
--- Idempotent insert of a tenant-scoped suppression row.
+-- Idempotent insert of a tenant-scoped suppression row. The ::text cast
+-- pins the email param to a non-null string even though the column is now
+-- nullable (person rows carry no email) — keeps the email write path's Go
+-- API unchanged.
 INSERT INTO unsubscribes (tenant_id, email, reason)
-VALUES (sqlc.arg(tenant_id), sqlc.arg(email), sqlc.arg(reason))
+VALUES (sqlc.arg(tenant_id), sqlc.arg(email)::text, sqlc.arg(reason))
 ON CONFLICT (COALESCE(tenant_id, '00000000-0000-0000-0000-000000000000'::uuid), lower(email)) DO NOTHING;
 
 -- name: InsertUnsubscribeGlobal :exec
 -- Idempotent insert of a global (tenant_id = NULL) suppression row.
 INSERT INTO unsubscribes (tenant_id, email, reason)
-VALUES (NULL, sqlc.arg(email), sqlc.arg(reason))
+VALUES (NULL, sqlc.arg(email)::text, sqlc.arg(reason))
 ON CONFLICT (COALESCE(tenant_id, '00000000-0000-0000-0000-000000000000'::uuid), lower(email)) DO NOTHING;
+
+-- name: InsertUnsubscribePerson :exec
+-- Idempotent insert of a person-keyed suppression row (the LinkedIn rail —
+-- prospects have no email). The partial-index predicate on the conflict
+-- target tells Postgres which arbiter index to use.
+INSERT INTO unsubscribes (tenant_id, person_id, reason)
+VALUES (sqlc.arg(tenant_id), sqlc.arg(person_id), sqlc.arg(reason))
+ON CONFLICT (COALESCE(tenant_id, '00000000-0000-0000-0000-000000000000'::uuid), person_id)
+    WHERE person_id IS NOT NULL
+    DO NOTHING;
+
+-- name: LookupSuppressionByPerson :one
+-- Person-keyed analogue of LookupSuppression: returns the suppression
+-- reason if (tenant_id, person_id) is suppressed, preferring a tenant row
+-- over a global one. No bounce layers — LinkedIn has no bounces.
+SELECT reason
+FROM unsubscribes
+WHERE (tenant_id = sqlc.arg(tenant_id) OR tenant_id IS NULL)
+  AND person_id = sqlc.arg(person_id)
+ORDER BY (tenant_id IS NULL) ASC
+LIMIT 1;
+
+-- name: ResolveCampaignLeadPerson :one
+-- Returns (tenant_id, person_id) for a campaign_lead — the person analogue
+-- of ResolveCampaignLeadAddress, used by the LinkedIn reply path to key the
+-- person-scoped suppression row.
+SELECT c.tenant_id, cl.person_id
+FROM campaign_leads cl
+JOIN campaigns c ON c.id = cl.campaign_id
+WHERE cl.id = $1;
+
+-- name: MarkLinkedInLeadReplied :one
+-- Idempotency gate for the LinkedIn reply path: flip the lead to 'replied'
+-- only if it is not already, RETURNING its id. A replay (duplicate webhook,
+-- or webhook + reconcile overlap) updates zero rows and yields no row, so
+-- the caller writes no duplicate event or suppression. Flips from any
+-- non-replied state (active / awaiting_accept / exhausted) so a late reply
+-- still suppresses the person.
+UPDATE campaign_leads
+SET status = 'replied', last_replied_at = NOW()
+WHERE id = $1 AND status <> 'replied'
+RETURNING id;
 
 -- name: HasHardBounceEvent :one
 -- True if any campaign_lead for this tenant that resolves to this

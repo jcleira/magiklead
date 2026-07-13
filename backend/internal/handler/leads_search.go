@@ -48,20 +48,24 @@ type leadSearchRequest struct {
 }
 
 type leadSearchResult struct {
-	PersonID         string   `json:"person_id"`
-	Name             string   `json:"name"`
-	FirstName        *string  `json:"first_name,omitempty"`
-	LastName         *string  `json:"last_name,omitempty"`
-	Title            *string  `json:"title,omitempty"`
-	Location         *string  `json:"location,omitempty"`
-	OrganizationID   string   `json:"organization_id"`
-	OrganizationName string   `json:"organization_name"`
-	Domain           *string  `json:"domain,omitempty"`
-	Industries       []string `json:"industries,omitempty"`
-	CompanySize      *string  `json:"company_size,omitempty"`
-	Email            *string  `json:"email,omitempty"`
-	EmailVerified    bool     `json:"email_verified"`
-	EmailIsCatchall  bool     `json:"email_is_catchall"`
+	PersonID         string  `json:"person_id"`
+	Name             string  `json:"name"`
+	FirstName        *string `json:"first_name,omitempty"`
+	LastName         *string `json:"last_name,omitempty"`
+	Title            *string `json:"title,omitempty"`
+	Location         *string `json:"location,omitempty"`
+	OrganizationID   string  `json:"organization_id"`
+	OrganizationName string  `json:"organization_name"`
+	Domain           *string `json:"domain,omitempty"`
+	// LinkedInURL is set for LinkedIn-sourced prospects (issue #2). The
+	// leads UI renders it as a profile link; these prospects carry no
+	// email.
+	LinkedInURL     *string  `json:"linkedin_url,omitempty"`
+	Industries      []string `json:"industries,omitempty"`
+	CompanySize     *string  `json:"company_size,omitempty"`
+	Email           *string  `json:"email,omitempty"`
+	EmailVerified   bool     `json:"email_verified"`
+	EmailIsCatchall bool     `json:"email_is_catchall"`
 	// HasEmail is true when the prospect is emailable even if the
 	// address isn't visible yet (PDL free tier gates the value behind a
 	// boolean). Email != nil implies HasEmail; the reverse holds only
@@ -162,10 +166,16 @@ func (h *LeadSearchHandler) Search(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	linkedinByPerson, err := h.attachLinkedIn(r.Context(), rows)
+	if err != nil {
+		apierr.WriteError(w, apierr.APIError{Status: 500, Code: "search_failed", Message: err.Error()})
+		return
+	}
+
 	results := make([]leadSearchResult, len(rows))
 	emailable := 0
 	for i, row := range rows {
-		results[i] = toSearchResult(row, emailByPerson[row.PersonID.Bytes])
+		results[i] = toSearchResult(row, emailByPerson[row.PersonID.Bytes], linkedinByPerson[row.PersonID.Bytes])
 		if results[i].HasEmail {
 			emailable++
 		}
@@ -208,6 +218,28 @@ func (h *LeadSearchHandler) attachEmails(ctx context.Context, rows []repository.
 	out := make(map[[16]byte]repository.ListBestEmailsForPersonsRow, len(emails))
 	for _, e := range emails {
 		out[e.PersonID.Bytes] = e
+	}
+	return out, nil
+}
+
+// attachLinkedIn maps each result person to its linkedin_url identifier
+// (issue #2), so LinkedIn-sourced prospects render a profile link. Most
+// persons have none; the map only carries those that do.
+func (h *LeadSearchHandler) attachLinkedIn(ctx context.Context, rows []repository.SearchPersonsRow) (map[[16]byte]string, error) {
+	if len(rows) == 0 {
+		return nil, nil
+	}
+	ids := make([]pgtype.UUID, len(rows))
+	for i, row := range rows {
+		ids[i] = row.PersonID
+	}
+	urls, err := h.queries.ListLinkedInURLsForPersons(ctx, ids)
+	if err != nil {
+		return nil, err
+	}
+	out := make(map[[16]byte]string, len(urls))
+	for _, u := range urls {
+		out[u.PersonID.Bytes] = u.LinkedinUrl
 	}
 	return out, nil
 }
@@ -255,7 +287,7 @@ func pgTextOrNull(s string) pgtype.Text {
 	return pgtype.Text{String: s, Valid: true}
 }
 
-func toSearchResult(p repository.SearchPersonsRow, em repository.ListBestEmailsForPersonsRow) leadSearchResult {
+func toSearchResult(p repository.SearchPersonsRow, em repository.ListBestEmailsForPersonsRow, linkedinURL string) leadSearchResult {
 	r := leadSearchResult{
 		PersonID:         fmtUUID(p.PersonID),
 		Name:             p.PersonCanonicalName,
@@ -297,6 +329,9 @@ func toSearchResult(p repository.SearchPersonsRow, em repository.ListBestEmailsF
 		r.EmailVerified = em.VerifiedAt.Valid
 		r.EmailIsCatchall = em.IsCatchall.Valid && em.IsCatchall.Bool
 		r.HasEmail = true
+	}
+	if linkedinURL != "" {
+		r.LinkedInURL = &linkedinURL
 	}
 	return r
 }

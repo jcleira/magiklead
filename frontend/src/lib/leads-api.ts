@@ -17,6 +17,9 @@ export interface LeadSearchResult {
   organization_id: string;
   organization_name: string;
   domain?: string;
+  // Set for LinkedIn-sourced prospects (issue #2); rendered as a profile
+  // link. These prospects carry no email.
+  linkedin_url?: string;
   industries?: string[];
   company_size?: string;
   email?: string;

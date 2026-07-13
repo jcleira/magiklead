@@ -264,9 +264,17 @@ func personalize(text string, lead repository.GetDueLeadsRow) string {
 	if lead.Title.Valid {
 		title = lead.Title.String
 	}
-	text = strings.ReplaceAll(text, "{{first_name}}", lead.FirstName)
-	text = strings.ReplaceAll(text, "{{last_name}}", lead.LastName)
-	text = strings.ReplaceAll(text, "{{company}}", lead.Company)
+	return renderTokens(text, lead.FirstName, lead.LastName, lead.Company, title)
+}
+
+// renderTokens substitutes the personalization tokens shared by the
+// email sender (personalize) and the LinkedIn step renderer
+// (RenderLinkedinStep). Centralising the token table keeps the two
+// rails from drifting; an unknown token is left verbatim.
+func renderTokens(text, firstName, lastName, company, title string) string {
+	text = strings.ReplaceAll(text, "{{first_name}}", firstName)
+	text = strings.ReplaceAll(text, "{{last_name}}", lastName)
+	text = strings.ReplaceAll(text, "{{company}}", company)
 	text = strings.ReplaceAll(text, "{{title}}", title)
 	return text
 }

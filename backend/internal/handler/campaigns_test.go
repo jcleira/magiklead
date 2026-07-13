@@ -98,6 +98,51 @@ func TestReengage_BadLeadID(t *testing.T) {
 	}
 }
 
+// Create validates the LinkedIn authoring contract before touching the
+// DB, so a handler with nil queries is enough to exercise it. A step-0
+// connection note over LinkedIn's 300-char cap must 4xx rather than
+// persist an unsendable note.
+func TestCreate_LinkedInNoteTooLong(t *testing.T) {
+	h := &CampaignHandler{} // validation returns before any DB call
+	body, _ := json.Marshal(map[string]any{
+		"play_id": uuid.NewString(),
+		"name":    "LI camp",
+		"channel": "linkedin",
+		"linkedin_sequence": []map[string]any{
+			{"step": 0, "delay_days": 0, "body": strings.Repeat("a", 301)},
+			{"step": 1, "delay_days": 2, "body": "hello {{first_name}}"},
+		},
+	})
+	req := httptest.NewRequest(http.MethodPost, "/campaigns", strings.NewReader(string(body)))
+	req = withTenant(req, uuid.New())
+	rr := httptest.NewRecorder()
+	h.Create(rr, req)
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("status=%d want 400; body=%s", rr.Code, rr.Body.String())
+	}
+}
+
+// A LinkedIn campaign with only a connection note and no DM step is an
+// incomplete sequence — the contract requires step-0 plus ≥1 DM.
+func TestCreate_LinkedInRequiresDMStep(t *testing.T) {
+	h := &CampaignHandler{}
+	body, _ := json.Marshal(map[string]any{
+		"play_id": uuid.NewString(),
+		"name":    "LI camp",
+		"channel": "linkedin",
+		"linkedin_sequence": []map[string]any{
+			{"step": 0, "delay_days": 0, "body": "hi, let's connect"},
+		},
+	})
+	req := httptest.NewRequest(http.MethodPost, "/campaigns", strings.NewReader(string(body)))
+	req = withTenant(req, uuid.New())
+	rr := httptest.NewRecorder()
+	h.Create(rr, req)
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("status=%d want 400; body=%s", rr.Code, rr.Body.String())
+	}
+}
+
 // Metrics is gated on a valid UUID before any DB access — verifiable
 // without a live Postgres. Behaviour against the database is exercised
 // by campaigns_metrics_test.go under the integration build tag.

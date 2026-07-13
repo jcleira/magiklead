@@ -31,25 +31,25 @@ End-to-end:
 
 ## Acceptance criteria
 
-- [ ] Migrations: `linkedin_events` (campaign_lead_id, event_type, step,
+- [x] Migrations: `linkedin_events` (campaign_lead_id, event_type, step,
   metadata, unipile_message_id, unipile_chat_id, created_at; indices
   like `email_events`); `campaign_leads` adds `linkedin_account_id`,
   `linkedin_invitation_id`, `linkedin_chat_id`, `accepted_at`; `status`
   enum gains `awaiting_accept`, `not_accepted`.
-- [ ] `linkedin/pacer` unit tests: given counters + an injected clock,
+- [x] `linkedin/pacer` unit tests: given counters + an injected clock,
   returns the right invite allowance; never exceeds 100/week or the
   daily sub-cap. Pure logic — no DB/network.
-- [ ] Worker tick: a queued LinkedIn lead → Unipile send-invite called
+- [x] Worker tick: a queued LinkedIn lead → Unipile send-invite called
   (assert the payload against the stub: account_id, recipient, rendered
   note) → `invite_sent` event → lead `awaiting_accept`, `next_send_at`
   NULL, `linkedin_account_id` + `linkedin_invitation_id` set → account
   `weekly_invite_count` incremented. Assert via DB + stub.
-- [ ] Pacer budget 0 → the tick sends nothing and leaves the lead
+- [x] Pacer budget 0 → the tick sends nothing and leaves the lead
   queued; assert via DB + logs.
-- [ ] A Unipile send error is classified (rate-limit/auth/restricted
+- [x] A Unipile send error is classified (rate-limit/auth/restricted
   sentinels, mirror `gmail.Sender`) and written as a `failed`
   `linkedin_event`; the lead is not advanced.
-- [ ] With one connected account, invites only come from that account
+- [x] With one connected account, invites only come from that account
   (the assigned `linkedin_account_id`).
 
 ## Modules touched
