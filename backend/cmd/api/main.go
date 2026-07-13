@@ -28,6 +28,7 @@ import (
 	"github.com/jcleira/magiklead/backend/internal/leads/pdl"
 	"github.com/jcleira/magiklead/backend/internal/linkedin/unipile"
 	"github.com/jcleira/magiklead/backend/internal/middleware"
+	"github.com/jcleira/magiklead/backend/internal/redisx"
 	"github.com/jcleira/magiklead/backend/internal/repository"
 	"github.com/jcleira/magiklead/backend/internal/suppression"
 )
@@ -63,7 +64,7 @@ func main() {
 	}
 	defer pool.Close()
 
-	redisOpt, err := asynq.ParseRedisURI(os.Getenv("REDIS_URL"))
+	redisOpt, err := redisx.ConnOpt(os.Getenv("REDIS_URL"))
 	if err != nil {
 		log.Fatalf("invalid REDIS_URL for asynq: %v", err)
 	}
