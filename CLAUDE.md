@@ -1,9 +1,15 @@
 # MagikLead
 
-Outreach product. Go backend (`backend/`) + Next.js 16 frontend
-(`frontend/`). The lead-database architecture and the initial-release
-plan live under `docs/` (see `docs/2026-04-25-initial-release/plan.md`
-for what's currently being delivered).
+Outreach product with two send rails: email (the customer's Gmail via
+OAuth) and LinkedIn (the customer's account via Unipile). Go backend
+(`backend/`) + Next.js 16 frontend (`frontend/`). `README.md` has the
+architecture overview. Plans, PRDs and issue trackers live under
+`docs/` as dated phase folders — a chronological record. The latest
+completed phase is the LinkedIn rail
+(`docs/2026-06-09-linkedin-only-outreach/` plus
+`docs/2026-06-25-finish-unipile-integration/`, all issues closed);
+`docs/2026-07-09-devpod-https-auth-handoff.md` is the most recent
+devpod state capture.
 
 ## Devpod
 
@@ -13,10 +19,22 @@ Postgres / Redis / MinIO / MailHog / Stripe-CLI listener, addressed
 at `<devpod-name>.magiklead.localhost` via a shared Traefik.
 
 The devpod name is derived from the branch — `magiklead-mvp` becomes
-`mvp`, so URLs land at `http://mvp.magiklead.localhost` (frontend),
-`http://api-mvp.magiklead.localhost` (backend), and
+`mvp`, so URLs land at `https://mvp.magiklead.localhost` (frontend),
+`https://api-mvp.magiklead.localhost` (backend), and
 `http://mail-mvp.magiklead.localhost` (MailHog UI for transactional
 mail).
+
+The https layer is user-built (mkcert cert + `websecure` entrypoint on
+the shared Traefik, config under `~/.config/devpods/traefik/`) — the
+devpods CLI itself only prints http URLs, and both schemes serve (no
+redirect). The app URLs are pinned to https literals in
+`devpod/compose.yml` (`APP_URL`, `FRONTEND_URL`, `NEXT_PUBLIC_API_URL`,
+`NEXT_PUBLIC_APP_URL`), so use the https origin in the browser: CORS
+is an exact match on `FRONTEND_URL`, and a Clerk session minted on one
+scheme doesn't carry to the other. If the browser rejects the cert
+after a mkcert CA regeneration, restart the browser — Chromium loads
+its cert store only at startup. Full debugging history:
+`docs/2026-07-09-devpod-https-auth-handoff.md`.
 
 Migrations apply automatically on `devpods up` — the api service's
 entrypoint runs `go run ./cmd/migrate` before handing control to air.
@@ -38,8 +56,9 @@ entrypoint runs `go run ./cmd/migrate` before handing control to air.
 
 ### Loading the canonical fixture (for testing search/save/campaign)
 
-The canonical `persons` graph is empty after migrations apply — the
-real ingest pipeline is operational (Phase 3 of the plan). For local
+The canonical `persons` graph is empty after migrations apply — real
+data arrives via `cmd/ingest` (Crunchbase CSV / SEC EDGAR / Wikidata /
+team-pages sources) or the PDL search fallback. For local
 testing the in-tree fixture loader inserts both channels' prospects:
 5 organizations + 20 persons with verified emails (email prospects),
 plus 2 organizations + 6 persons with `linkedin_url` identifiers and
@@ -106,9 +125,10 @@ bakes the same data into the local snapshot.
   connect/send routes degrade like PDL — `GET /linkedin/auth-url`
   returns 503 `linkedin_disabled` instead of crashing. A dev dummy value
   is enough to exercise the connect gate + webhook locally
-- `UNIPILE_DSN` (optional) — the per-tenant Unipile API base URL /
-  subdomain (e.g. `https://api6.unipile.com:13443`). Used as the base
-  for hosted-auth + disconnect calls
+- `UNIPILE_DSN` (optional) — the Unipile instance base URL for this
+  deployment (e.g. `https://api55.unipile.com:18524`). Used as the
+  base for all Unipile REST calls (hosted-auth, resolve, send,
+  disconnect)
 - `UNIPILE_WEBHOOK_SECRET` — required once `UNIPILE_API_KEY` is set (api
   fails fast otherwise). HS256 key that does double duty: it signs the
   `pkg/jwt` metadata token embedded in the hosted-auth link (which
@@ -142,13 +162,42 @@ container) and exports `STRIPE_WEBHOOK_SECRET` before starting air.
   the unsubscribe today. Wire inbound parsing in a follow-up before
   scaling beyond the seven-day launch window.
 
+- **The devpod can't receive real Unipile webhooks.**
+  `api-<devpod>.magiklead.localhost` is unresolvable from Unipile's
+  cloud, so live `account.connected` / message events never arrive
+  locally — connecting at Unipile won't auto-reflect in the app. The
+  webhook spine is still fully exercisable by POSTing crafted payloads
+  (frozen captures in
+  `docs/2026-06-25-finish-unipile-integration/spike-captures.md`) to
+  `/api/v1/webhooks/unipile` with the right signature — the e2e suite
+  does exactly this. For a real Unipile→app smoke, expose the api via
+  a cloudflared/ngrok tunnel and re-register the webhook. Quick
+  workaround after a real hosted-auth connect: insert the
+  `linkedin_accounts` bind row manually (evaporates on `devpods seed`).
+
 ### Clerk dashboard prereqs
 
 1. Create a JWT template named **`magiklead-backend`** with body
    `{"email": "{{user.primary_email_address}}"}`. Without it the
    backend's admin gate returns 403 "Missing email claim".
 2. Add a webhook endpoint with events `user.created` + `user.updated`
-   pointing at `http://api-<devpod>.magiklead.localhost/api/v1/webhooks/clerk`.
+   pointing at `https://api-<devpod>.magiklead.localhost/api/v1/webhooks/clerk`.
    Clerk can't reach `.localhost` directly — for local testing, expose
    it via `cloudflared tunnel run` or `ngrok http 80` and use the
    tunnel URL.
+
+## Tests
+
+- Backend: `devpods exec api go test ./...` — run inside the devpod so
+  integration tests (e.g. the Unipile connect-and-bind suite) see the
+  devpod `DATABASE_URL`.
+- E2E: Playwright walks 20 flows (signup → email campaigns → the full
+  LinkedIn rail) from `tests/e2e/`. It targets a running stack
+  directly via `E2E_FRONTEND_URL` (default
+  `http://mvp.magiklead.localhost`) and does not shell out to the
+  devpods CLI. Run: `cd tests/e2e && pnpm install && pnpm e2e`.
+- CI (`.github/workflows/e2e.yml`) runs the same suite on every
+  backend/frontend PR and nightly at 02:17 UTC, standing the stack up
+  natively on the runner (no devpods). Specs needing real third-party
+  creds (Gmail Workspace, Stripe live, PDL) skip when the GitHub
+  secrets are absent; Unipile flows run against dummy secrets.
