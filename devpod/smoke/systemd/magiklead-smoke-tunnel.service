@@ -1,0 +1,12 @@
+[Unit]
+Description=cloudflared named tunnel fronting the magiklead smoke devpod API
+After=network-online.target docker.service
+Wants=network-online.target
+
+[Service]
+ExecStart=/usr/bin/cloudflared tunnel --config %h/.cloudflared/magiklead-smoke.yml run
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=default.target

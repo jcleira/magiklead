@@ -1,0 +1,13 @@
+# cloudflared config for the magiklead smoke devpod tunnel.
+# Rendered by provision-tunnel.sh — do not put credentials here.
+# The ingress presents the pod's Traefik host header against the
+# shared Traefik's local http entrypoint (port 80: both schemes
+# serve, and http avoids the mkcert cert-name mismatch).
+tunnel: __TUNNEL_UUID__
+credentials-file: __CREDENTIALS_FILE__
+ingress:
+  - hostname: __PUBLIC_HOSTNAME__
+    service: http://localhost:80
+    originRequest:
+      httpHostHeader: __ORIGIN_HOST_HEADER__
+  - service: http_status:404
