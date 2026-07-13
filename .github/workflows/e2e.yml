@@ -64,7 +64,8 @@ jobs:
     env:
       # --- service URLs: no devpod / no Traefik, everything on localhost ---
       DATABASE_URL: postgres://magiklead:magiklead@localhost:5432/magiklead?sslmode=disable
-      # asynq takes a bare host:port (NOT a redis:// URL).
+      # asynq accepts either a redis:// URL or a bare host:port
+      # (internal/redisx.ConnOpt); the bare form is fine here.
       REDIS_URL: localhost:6379
       S3_ENDPOINT: http://localhost:9000
       S3_PUBLIC_ENDPOINT: http://localhost:9000
@@ -86,6 +87,16 @@ jobs:
       # Arbitrary shared signing key — api and worker only need the same
       # value; CI is ephemeral, so a constant is correct (not a secret).
       UNSUBSCRIBE_SIGNING_SECRET: ci-unsubscribe-signing-secret-not-a-real-secret
+      # Unipile: CI has no real Unipile, but the LinkedIn flows (16, 19)
+      # post signed webhooks the api must accept (webhook secret); flow 16
+      # also needs the connect routes "Configured" so /auth-url gates at
+      # 4xx not 503 (dummy api key), and disconnect tolerating a failing
+      # call to the dummy DSN. api + worker + the test signer all read
+      # these; shared constants are correct for ephemeral CI. Mirrors the
+      # devpod's dev setup.
+      UNIPILE_API_KEY: ci-unipile-dummy-key
+      UNIPILE_DSN: https://api.unipile.test:443
+      UNIPILE_WEBHOOK_SECRET: ci-unipile-webhook-secret-not-a-real-secret
       SYSTEM_SMTP_HOST: localhost
       SYSTEM_SMTP_PORT: '1025'
       SYSTEM_SMTP_FROM: no-reply@magiklead.localhost
