@@ -33,14 +33,16 @@ fi
 echo "==> Ensuring tunnel '${TUNNEL_NAME}' exists"
 if ! cloudflared tunnel list --output json | python3 -c "
 import json,sys
-sys.exit(0 if any(t['name']=='${TUNNEL_NAME}' for t in json.load(sys.stdin)) else 1)
+tunnels = json.load(sys.stdin) or []
+sys.exit(0 if any(t['name']=='${TUNNEL_NAME}' for t in tunnels) else 1)
 "; then
   cloudflared tunnel create "$TUNNEL_NAME"
 fi
 
 TUNNEL_UUID=$(cloudflared tunnel list --output json | python3 -c "
 import json,sys
-print(next(t['id'] for t in json.load(sys.stdin) if t['name']=='${TUNNEL_NAME}'))
+tunnels = json.load(sys.stdin) or []
+print(next(t['id'] for t in tunnels if t['name']=='${TUNNEL_NAME}'))
 ")
 CREDENTIALS_FILE="$CF_DIR/${TUNNEL_UUID}.json"
 [[ -f "$CREDENTIALS_FILE" ]] \
@@ -70,20 +72,33 @@ echo "==> Enabling linger so the tunnel survives reboots unattended"
 loginctl enable-linger "$USER" \
   || echo "WARN: enable-linger failed — run: sudo loginctl enable-linger $USER"
 
-echo "==> Verifying public routing (api-generated status expected)"
+echo "==> Verifying public routing (origin api status expected)"
 URL="https://${PUBLIC_HOSTNAME}/api/v1/webhooks/unipile"
 for i in $(seq 1 18); do
-  CODE=$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 "$URL" || echo 000)
+  RESP=$(curl -s -D - -o /dev/null --max-time 10 "$URL" 2>/dev/null || true)
+  CODE=$(printf '%s\n' "$RESP" | awk 'toupper($1) ~ /^HTTP/ {print $2; exit}')
+  # A Cloudflare managed challenge (cf-mitigated: challenge) is served by
+  # the edge BEFORE the request reaches the tunnel. It is NOT proof of
+  # routing, and automated senders (Unipile) cannot solve it — so treat it
+  # as a hard failure with the fix, not a success.
+  if printf '%s\n' "$RESP" | grep -qiE '^cf-mitigated:[[:space:]]*challenge'; then
+    echo "ERROR: ${URL} -> ${CODE:-?}: Cloudflare managed challenge blocked the request" >&2
+    echo "       at the edge; it never reached the pod, and Unipile would be blocked too." >&2
+    echo "       Fix on the ${PUBLIC_HOSTNAME#*.} zone: add a WAF custom rule matching this" >&2
+    echo "       host with action Skip (Super Bot Fight Mode + managed rules), or disable" >&2
+    echo "       Bot Fight Mode, then re-run this script." >&2
+    exit 2
+  fi
   case "$CODE" in
-    200|401|403|405|415|422|503)
-      echo "==> OK: GET ${URL} -> ${CODE} (api-generated; routing proven)"
+    200|401|405|415|422|503)
+      echo "==> OK: GET ${URL} -> ${CODE} (origin api response; routing proven)"
       exit 0 ;;
     404)
       echo "WARN: 404 — tunnel up but ingress hostname mismatch?" ;;
     *)
-      echo "    attempt ${i}: ${CODE} (edge/DNS still propagating)" ;;
+      echo "    attempt ${i}: ${CODE:-000} (edge/DNS still propagating)" ;;
   esac
   sleep 5
 done
-echo "ERROR: ${URL} never returned an api-generated status" >&2
+echo "ERROR: ${URL} never returned an origin api status" >&2
 exit 1

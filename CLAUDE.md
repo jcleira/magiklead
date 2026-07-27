@@ -39,6 +39,33 @@ its cert store only at startup. Full debugging history:
 Migrations apply automatically on `devpods up` — the api service's
 entrypoint runs `go run ./cmd/migrate` before handing control to air.
 
+### Public base URL override (smoke pod only)
+
+`APP_URL` normally interpolates to the local literal
+(`https://api-<pod>.<project>.localhost`) on every pod. The backend
+stamps it into the Unipile hosted-auth `notify_url`
+(`UnipileHandler.AuthURL`), so a pod that must receive real Unipile
+webhooks needs a *publicly reachable* base instead. Override it with
+`MAGIKLEAD_PUBLIC_API_URL` in a **gitignored `.env` at the worktree
+root**: docker-compose reads it for the
+`APP_URL: ${MAGIKLEAD_PUBLIC_API_URL:-<local literal>}` interpolation
+in `devpod/compose.yml`, and devpods regenerates only `.devpod.env`
+(never `.env`), so the override survives `devpods up`. In the smoke
+worktree only:
+
+```
+# <smoke-worktree>/.env  — gitignored, never committed
+MAGIKLEAD_PUBLIC_API_URL=https://magiklead-smoke.magikshot.com
+```
+
+Every other worktree leaves it unset and keeps the local literal, so
+the mvp pod is byte-identical to before. `FRONTEND_URL` stays local
+everywhere — hosted-auth *redirects* run in the operator's browser on
+the laptop, so only the webhook callback needs public reachability.
+The public tunnel that this URL points at is stood up in
+`docs/2026-07-13-magikshot-linkedin-smoke/` (issue #01). Verify with
+`devpods exec api printenv APP_URL`.
+
 ### Commands Claude may run
 
 - `devpods up` — provision the devpod for the current worktree (idempotent)
@@ -133,10 +160,13 @@ bakes the same data into the local snapshot.
   fails fast otherwise). HS256 key that does double duty: it signs the
   `pkg/jwt` metadata token embedded in the hosted-auth link (which
   Unipile echoes back on `account.connected`, binding the connected
-  account to the tenant) AND verifies the HMAC-SHA256 signature on the
-  inbound `/api/v1/webhooks/unipile` body. Keep it distinct from the
-  other signing secrets; any opaque 32+ byte string. The public webhook
-  returns 503 if it is unset and 401 on a bad signature
+  account to the tenant) AND is the static `Unipile-Auth` header value
+  stamped into every webhook registration, which the inbound
+  `/api/v1/webhooks/unipile` endpoint constant-time compares. Unipile
+  has no body signing — that header is the endpoint's only
+  authentication. Keep it distinct from the other signing secrets; any
+  opaque 32+ byte string. The public webhook returns 503 if it is unset
+  and 401 on a missing or wrong header
 
 `~/.config/devpods/magiklead/.env.frontend`:
 
@@ -169,9 +199,11 @@ container) and exports `STRIPE_WEBHOOK_SECRET` before starting air.
   webhook spine is still fully exercisable by POSTing crafted payloads
   (frozen captures in
   `docs/2026-06-25-finish-unipile-integration/spike-captures.md`) to
-  `/api/v1/webhooks/unipile` with the right signature — the e2e suite
-  does exactly this. For a real Unipile→app smoke, expose the api via
-  a cloudflared/ngrok tunnel and re-register the webhook. Quick
+  `/api/v1/webhooks/unipile` with the `Unipile-Auth` header set to
+  `UNIPILE_WEBHOOK_SECRET` — the e2e suite does exactly this. For a
+  real Unipile→app smoke, expose the api via a cloudflared/ngrok
+  tunnel and re-register the webhooks (`go run
+  ./cmd/unipile-webhooks register --base-url <public-origin>`). Quick
   workaround after a real hosted-auth connect: insert the
   `linkedin_accounts` bind row manually (evaporates on `devpods seed`).
 

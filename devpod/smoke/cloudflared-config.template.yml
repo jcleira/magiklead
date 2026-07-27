@@ -1,13 +1,20 @@
 # cloudflared config for the magiklead smoke devpod tunnel.
 # Rendered by provision-tunnel.sh — do not put credentials here.
-# The ingress presents the pod's Traefik host header against the
-# shared Traefik's local http entrypoint (port 80: both schemes
-# serve, and http avoids the mkcert cert-name mismatch).
+# Origin is the shared Traefik's https (websecure) entrypoint on
+# localhost:443. The http:80 entrypoint 301-redirects to https, so
+# routing there would relay a redirect to a non-public host and break
+# the webhook. We hit 443 directly: originServerName sets the TLS SNI
+# and httpHostHeader sets the HTTP Host — both api-<pod>.magiklead.localhost
+# so Traefik's SNI and Host routers match. noTLSVerify because the
+# mkcert CA isn't in cloudflared's trust store (loopback, so cert
+# verification is moot anyway).
 tunnel: __TUNNEL_UUID__
 credentials-file: __CREDENTIALS_FILE__
 ingress:
   - hostname: __PUBLIC_HOSTNAME__
-    service: http://localhost:80
+    service: https://localhost:443
     originRequest:
       httpHostHeader: __ORIGIN_HOST_HEADER__
+      originServerName: __ORIGIN_HOST_HEADER__
+      noTLSVerify: true
   - service: http_status:404
