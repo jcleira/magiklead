@@ -67,16 +67,23 @@ func TestNormalizeName(t *testing.T) {
 	}
 }
 
+// TestNormalizeLinkedInURL now covers only the org-identifier path: person
+// LinkedIn identity moved to the canonical full-URL form in
+// internal/linkedin/liurl (see TestCanonical there). NormalizeLinkedInURL
+// still produces the scheme-less "linkedin.com/<path>" form that
+// orgIdentifiers writes under identifier_type "linkedin" — organization rows
+// have no rail reader and are out of the unification's scope, so that form
+// is intentionally unchanged.
 func TestNormalizeLinkedInURL(t *testing.T) {
 	tests := map[string]string{
-		"https://www.linkedin.com/in/timcook/":        "linkedin.com/in/timcook",
-		"https://linkedin.com/in/timcook":             "linkedin.com/in/timcook",
-		"HTTP://WWW.LinkedIn.COM/in/Tim-Cook-123":     "linkedin.com/in/tim-cook-123",
-		"/in/timcook":                                 "linkedin.com/in/timcook",
-		"linkedin.com/company/apple":                  "linkedin.com/company/apple",
-		"https://twitter.com/timcook":                 "",
-		"":                                            "",
-		"not a url":                                   "",
+		"https://www.linkedin.com/in/timcook/":    "linkedin.com/in/timcook",
+		"https://linkedin.com/in/timcook":         "linkedin.com/in/timcook",
+		"HTTP://WWW.LinkedIn.COM/in/Tim-Cook-123": "linkedin.com/in/tim-cook-123",
+		"/in/timcook":                 "linkedin.com/in/timcook",
+		"linkedin.com/company/apple":  "linkedin.com/company/apple",
+		"https://twitter.com/timcook": "",
+		"":                            "",
+		"not a url":                   "",
 	}
 	for in, want := range tests {
 		if got := NormalizeLinkedInURL(in); got != want {
@@ -87,11 +94,11 @@ func TestNormalizeLinkedInURL(t *testing.T) {
 
 func TestNormalizeDomain(t *testing.T) {
 	tests := map[string]string{
-		"apple.com":                    "apple.com",
-		"www.apple.com":                "apple.com",
-		"https://www.apple.com/path":   "apple.com",
-		"HTTPS://Apple.COM":            "apple.com",
-		"":                             "",
+		"apple.com":                  "apple.com",
+		"www.apple.com":              "apple.com",
+		"https://www.apple.com/path": "apple.com",
+		"HTTPS://Apple.COM":          "apple.com",
+		"":                           "",
 	}
 	for in, want := range tests {
 		if got := NormalizeDomain(in); got != want {
@@ -112,7 +119,10 @@ func TestPersonIdentifiers(t *testing.T) {
 	if ids[0].typ != "cik" || ids[0].value != "0001214156" {
 		t.Errorf("ids[0]=%+v", ids[0])
 	}
-	if ids[1].typ != "linkedin" || ids[1].value != "linkedin.com/in/timcook" {
+	// Person LinkedIn identity now unifies on type "linkedin_url" + the
+	// canonical full URL (the trailing slash is dropped by liurl.Canonical),
+	// the same type + value form every rail reader filters on.
+	if ids[1].typ != "linkedin_url" || ids[1].value != "https://www.linkedin.com/in/timcook" {
 		t.Errorf("ids[1]=%+v", ids[1])
 	}
 }

@@ -35,6 +35,7 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/jcleira/magiklead/backend/internal/linkedin/liurl"
 	"github.com/jcleira/magiklead/backend/internal/repository"
 )
 
@@ -161,7 +162,11 @@ func (m *Module) WriteThrough(ctx context.Context, profiles []Profile) ([]Person
 }
 
 func (m *Module) writeOne(ctx context.Context, p Profile) (Person, error) {
-	linkedinURL := strings.TrimSpace(p.LinkedInURL)
+	// Canonicalize at the single write boundary so the stored identifier and
+	// the dedup lookup below share one spelling with every other writer.
+	// A profile with no usable LinkedIn URL (empty or non-linkedin.com) is
+	// skipped rather than stored raw.
+	linkedinURL := liurl.Canonical(p.LinkedInURL)
 	if linkedinURL == "" {
 		return Person{}, errors.New("linkedinsearch: profile has no linkedin_url")
 	}

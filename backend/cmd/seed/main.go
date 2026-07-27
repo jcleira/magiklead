@@ -18,6 +18,8 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/joho/godotenv"
+
+	"github.com/jcleira/magiklead/backend/internal/linkedin/liurl"
 )
 
 const seedSQL = `
@@ -170,5 +172,35 @@ func main() {
 	if emails == 0 || linkedin == 0 {
 		log.Fatalf("seed: %d orgs + %d persons but %d emails / %d linkedin prospects — fixture is broken", orgs, persons, emails, linkedin)
 	}
+
+	// Every seeded linkedin_url must already be in liurl canonical form. The
+	// fixture is the same canonical person graph the live search and the
+	// ingest resolver write into, so a non-canonical literal here would
+	// silently fork a prospect into two person rows (identifier_value is
+	// globally UNIQUE and dedup matches the exact string). Validating against
+	// the shared helper keeps the seed emitting canonical values via the same
+	// single source of truth (issue #07).
+	rows, err := pool.Query(ctx, `SELECT pi.identifier_value
+		FROM person_identifiers pi
+		JOIN persons p ON p.id = pi.person_id
+		WHERE pi.identifier_type = 'linkedin_url'
+		  AND p.canonical_name LIKE '%(devpod-fixture)'`)
+	if err != nil {
+		log.Fatal("seed canonical check: ", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var v string
+		if err := rows.Scan(&v); err != nil {
+			log.Fatal("seed canonical scan: ", err)
+		}
+		if c := liurl.Canonical(v); c != v {
+			log.Fatalf("seed: fixture linkedin_url %q is not canonical (want %q) — align it with liurl.Canonical", v, c)
+		}
+	}
+	if err := rows.Err(); err != nil {
+		log.Fatal("seed canonical rows: ", err)
+	}
+
 	log.Printf("seed: %d orgs + %d persons + %d emails + %d linkedin prospects inserted", orgs, persons, emails, linkedin)
 }
