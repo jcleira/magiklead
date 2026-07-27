@@ -95,9 +95,10 @@ func TestListWebhooks_ParsesTheWebhookListEnvelope(t *testing.T) {
 }
 
 func TestCreateWebhook_SendsSpecAndReturnsAssignedID(t *testing.T) {
-	s := newStub(t, 201, `{"object":"Webhook","id":"wh_new","source":"messaging",
-	  "name":"magiklead-smoke-messaging","request_url":"https://smoke.example.com/api/v1/webhooks/unipile",
-	  "events":["message_received"],"enabled":true}`)
+	// Unipile's real create response (captured live 2026-07-27): the object
+	// marker and the new id only — it does NOT echo the registration. The
+	// returned Webhook is therefore rebuilt from the spec, asserted below.
+	s := newStub(t, 201, `{"object":"WebhookCreated","webhook_id":"wh_new"}`)
 	m := unipile.New("key", s.URL, nil, s.Client())
 
 	got, err := m.CreateWebhook(context.Background(), unipile.WebhookSpec{
@@ -112,6 +113,11 @@ func TestCreateWebhook_SendsSpecAndReturnsAssignedID(t *testing.T) {
 	}
 	if got.ID != "wh_new" {
 		t.Errorf("created id = %q, want wh_new", got.ID)
+	}
+	if got.Source != "messaging" || got.Name != "magiklead-smoke-messaging" ||
+		got.RequestURL != "https://smoke.example.com/api/v1/webhooks/unipile" ||
+		!slices.Equal(got.Events, []string{"message_received"}) {
+		t.Errorf("returned webhook = %+v, want it rebuilt from the sent spec", got)
 	}
 	if s.method != http.MethodPost || s.path != "/api/v1/webhooks" {
 		t.Errorf("request = %s %s, want POST /api/v1/webhooks", s.method, s.path)
@@ -139,7 +145,7 @@ func TestCreateWebhook_SendsSpecAndReturnsAssignedID(t *testing.T) {
 // source takes no event selector, and sending an empty array where Unipile
 // expects the key absent is the kind of thing it answers 400 to.
 func TestCreateWebhook_OmitsEmptyEvents(t *testing.T) {
-	s := newStub(t, 201, `{"object":"Webhook","id":"wh_status","source":"account_status"}`)
+	s := newStub(t, 201, `{"object":"WebhookCreated","webhook_id":"wh_status"}`)
 	m := unipile.New("key", s.URL, nil, s.Client())
 
 	if _, err := m.CreateWebhook(context.Background(), unipile.WebhookSpec{
@@ -210,7 +216,7 @@ func TestWebhookCRUD_ClassifiesUpstreamErrors(t *testing.T) {
 	// A 2xx that carries no id would otherwise look like a success and leave
 	// the operator believing a registration exists when none does.
 	t.Run("create response without id", func(t *testing.T) {
-		s := newStub(t, 201, `{"object":"Webhook"}`)
+		s := newStub(t, 201, `{"object":"WebhookCreated"}`)
 		m := unipile.New("key", s.URL, nil, s.Client())
 		_, err := m.CreateWebhook(context.Background(), unipile.WebhookSpec{Source: "messaging"})
 		if !errors.Is(err, unipile.ErrMalformed) {

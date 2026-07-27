@@ -138,14 +138,26 @@ func (m *Module) CreateWebhook(ctx context.Context, spec WebhookSpec) (Webhook, 
 	if err := mapStatus(resp.StatusCode, raw); err != nil {
 		return Webhook{}, err
 	}
-	var created wireWebhook
+	// Unipile answers create with {"object":"WebhookCreated","webhook_id":"…"} —
+	// only the new id, not the full registration the list endpoint returns
+	// (wireWebhook). So read webhook_id and rebuild the Webhook from the spec we
+	// just sent; there is nothing else in the body to echo.
+	var created struct {
+		WebhookID string `json:"webhook_id"`
+	}
 	if err := json.Unmarshal(raw, &created); err != nil {
 		return Webhook{}, fmt.Errorf("%w: %v", ErrMalformed, err)
 	}
-	if created.ID == "" {
-		return Webhook{}, fmt.Errorf("%w: create-webhook response had no id", ErrMalformed)
+	if created.WebhookID == "" {
+		return Webhook{}, fmt.Errorf("%w: create-webhook response had no webhook_id", ErrMalformed)
 	}
-	return created.toWebhook(), nil
+	return Webhook{
+		ID:         created.WebhookID,
+		Source:     spec.Source,
+		Name:       spec.Name,
+		RequestURL: spec.RequestURL,
+		Events:     spec.Events,
+	}, nil
 }
 
 // DeleteWebhook removes one registration by Unipile id.
