@@ -12,6 +12,15 @@ key (`sha256 dcf1e148…`); the leaked-key concern was raised and
 overruled. Slate verified clean (personal account disconnected, Unipile
 `total_count 0`) — see #04 and `../day0-evidence.md`. Gate satisfied.
 
+**Prep executed 2026-07-27** (session-driven step 1 + AC2/AC3): smoke
+pod deployed to #02/#03/#07 (PR #7), `APP_URL` = the public tunnel,
+migration 030 applied, three webhooks registered at the tunnel with the
+`Unipile-Auth` header (3 stale mvp registrations pruned), `notify_url`
+wired. A latent #03 bug (create-webhook parsed `id`, not the real
+`webhook_id`) was found on this first live run and fixed. Evidence:
+`../day0-connect-prep.md`. AC4–AC8 await the founder ceremony (Handoff
+below).
+
 ## What to build
 
 Nothing new — this slice **executes** the runbook's day-0 checklist
@@ -55,7 +64,7 @@ Sequence:
 
 - [x] `Key rotation confirmed:` field above is filled (gate from
       #04).
-- [ ] Registration CLI `list` output (3 sources, tunnel
+- [x] Registration CLI `list` output (3 sources, tunnel
       `request_url`, `Unipile-Auth` header present) captured as
       evidence in the docs folder.
 - [ ] The minted hosted-auth link carries the tunnel `notify_url`
