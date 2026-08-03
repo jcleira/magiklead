@@ -5,7 +5,7 @@
 [09 — Curate, approve, load the list](./09-curate-approve-load-list.md),
 [10 — Plays + approved copy](./10-plays-and-approved-copy.md)
 
-Warm-up start date: ______ (filled from #06's handoff)
+Warm-up start date: 2026-07-29 (account creation; bound 2026-08-03) — filled from #06's handoff
 Warm-up complete confirmed: ______ (founder, against #05's
 completion criterion — the calendar gate)
 Approved copy: ______ (filled from #10's handoff)

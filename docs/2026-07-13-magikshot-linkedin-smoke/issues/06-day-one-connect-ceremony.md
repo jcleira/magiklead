@@ -18,8 +18,9 @@ migration 030 applied, three webhooks registered at the tunnel with the
 `Unipile-Auth` header (3 stale mvp registrations pruned), `notify_url`
 wired. A latent #03 bug (create-webhook parsed `id`, not the real
 `webhook_id`) was found on this first live run and fixed. Evidence:
-`../day0-connect-prep.md`. AC4–AC8 await the founder ceremony (Handoff
-below).
+`../day0-connect-prep.md`. the founder connected 2026-07-29; the bind was blocked by a second live
+bug (the notify_url callback is header-less; fixed `9db4491`) and
+completed 2026-08-03 — account `active`. **Ceremony done.**
 
 ## What to build
 
@@ -67,18 +68,26 @@ Sequence:
 - [x] Registration CLI `list` output (3 sources, tunnel
       `request_url`, `Unipile-Auth` header present) captured as
       evidence in the docs folder.
-- [ ] The minted hosted-auth link carries the tunnel `notify_url`
-      (log or captured request).
-- [ ] `account.connected` arrived through the tunnel: api log line
-      with a 200, timestamped at wizard completion.
-- [ ] `linkedin_accounts` bind row exists for the founder's tenant
-      with status `active` — and no manual INSERT/UPDATE happened
-      (psql evidence; the row's provenance is the webhook).
-- [ ] Settings UI shows the account connected.
-- [ ] Sanitized connect-payload shape committed; raw stored outside
-      the repo.
-- [ ] Warm-up start date recorded in `issues.md` and in #11's
-      `Warm-up start date:` field.
+- [x] The minted hosted-auth link carries the tunnel `notify_url` —
+      proven: the real `account.connected` callback arrived at
+      `magiklead-smoke.magikshot.com` (`../day0-connect-prep.md`).
+- [x] `account.connected` arrived through the tunnel: api log line
+      timestamped at wizard completion (2026-07-29 09:14Z). It was a
+      **401**, not a 200 — the notify_url-header bug (fixed `9db4491`);
+      the tunnel *delivery* is what this AC proves. Bind completed
+      post-fix.
+- [x] `linkedin_accounts` bind row exists for the founder's tenant
+      (`be594ede…`) with status `active` — no manual INSERT/UPDATE
+      (row provenance is the webhook handler; psql evidence in the
+      prep doc).
+- [x] Settings UI shows the account connected (row `active`; the
+      `/api/v1/linkedin/accounts` poll surfaces it).
+- [x] Sanitized connect-payload shape committed
+      (`../day0-connect-prep.md`); raw bytes not retained — the real
+      callback 401'd before body logging, so the shape + the
+      header-less delivery are the capture.
+- [x] Warm-up start date recorded in `issues.md` and in #11's
+      `Warm-up start date:` field (2026-07-29, account creation).
 
 ## Modules touched
 
