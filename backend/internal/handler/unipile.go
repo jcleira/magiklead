@@ -184,16 +184,24 @@ func (h *UnipileHandler) Webhook(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusServiceUnavailable)
 		return
 	}
-	if !h.svc.VerifyAuthToken(r.Header.Get("Unipile-Auth")) {
-		log.Print("unipile webhook auth failed")
-		w.WriteHeader(http.StatusUnauthorized)
-		return
-	}
+	authed := h.svc.VerifyAuthToken(r.Header.Get("Unipile-Auth"))
 
 	ev, err := h.svc.ParseWebhook(body)
 	if err != nil {
 		log.Printf("unipile webhook parse: %v", err)
 		w.WriteHeader(http.StatusBadRequest)
+		return
+	}
+
+	// The hosted-auth notify_url callback (account.connected) arrives WITHOUT
+	// our Unipile-Auth header — it is a per-session callback, not a registered
+	// webhook with configured headers — and authenticates instead by the
+	// signed metadata it carries, which handleAccountConnected verifies
+	// (decodeUnipileState, HS256). Every other event comes from a registered
+	// webhook and must present the header.
+	if !authed && ev.Type != unipile.EventAccountConnected {
+		log.Print("unipile webhook auth failed")
+		w.WriteHeader(http.StatusUnauthorized)
 		return
 	}
 
