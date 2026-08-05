@@ -68,9 +68,24 @@ test('flow 16: webhook connect → active → idempotent → free-tier gate → 
     expect(r2.status).toBe(200);
     expect(queryScalar(`SELECT count(*) FROM linkedin_accounts WHERE unipile_account_id='${acctId}';`)).toBe('1');
 
-    // 16c: a wrong Unipile-Auth header is rejected before any write (AC #3).
-    const badAuth = await postWebhook(connected, 'wrong-secret');
-    expect(badAuth.status).toBe(401);
+    // 16c: the connect callback authenticates by its SIGNED METADATA, not the
+    // static Unipile-Auth header. The real hosted-auth notify_url arrives
+    // header-less (fix 9db4491), so a connect with a wrong header but valid
+    // metadata is still accepted and stays idempotent — no second row.
+    const wrongHeader = await postWebhook(connected, 'wrong-secret');
+    expect(wrongHeader.status).toBe(200);
+    expect(queryScalar(`SELECT count(*) FROM linkedin_accounts WHERE unipile_account_id='${acctId}';`)).toBe('1');
+
+    // ...but the HS256 signature is the real gate: a connect whose metadata
+    // signature doesn't verify is acknowledged (200, so Unipile stops
+    // retrying) yet binds nothing.
+    const forgedAcct = `acc_flow16_forged_${crypto.randomUUID().slice(0, 8)}`;
+    const parts = mintMetadata(tenantId, userUUID, exp).split('.');
+    const forgedMeta = `${parts[0]}.${parts[1]}.${b64url('not-a-valid-signature')}`;
+    const forged = JSON.stringify({ status: 'CREATION_SUCCESS', account_id: forgedAcct, name: forgedMeta });
+    const forgedRes = await postWebhook(forged, 'wrong-secret');
+    expect(forgedRes.status).toBe(200);
+    expect(queryScalar(`SELECT count(*) FROM linkedin_accounts WHERE unipile_account_id='${forgedAcct}';`)).toBe('0');
 
     // 16d: /linkedin/accounts lists the connected account with status (AC #5).
     const listRes = await client.get('/api/v1/linkedin/accounts');
