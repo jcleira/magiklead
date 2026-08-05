@@ -130,4 +130,3 @@ URL**. Build:
 - Teaching the PDL path to extract LinkedIn URLs (PDL writes
   `pdl_id` only; not a LinkedIn-identity writer per the PRD).
 - The `linkedin_member_id` cache.
-- The curated loader itself — [#08](./08-curated-prospect-csv-loader.md).

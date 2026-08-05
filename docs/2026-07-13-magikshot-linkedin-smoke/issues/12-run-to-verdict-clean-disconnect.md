@@ -3,7 +3,16 @@
 **Source PRD**: [../prd.md](../prd.md)
 **Blocked by**: [11 — Campaign creation + manual start](./11-campaign-creation-manual-start.md)
 
-Campaign start date: ______ (filled from #11's handoff)
+Campaign start date: ______ (the app's campaign start timestamp; from #11)
+
+> **UI-first (2026-08-05 founder direction).** Daily observation happens
+> in the app — the dashboard + the campaign's metrics/timeline
+> (`/dashboard`, `/campaigns/{id}`, `/deliverability`) — and the clean
+> disconnect is the settings UI. A few pass-criteria *proofs* read
+> internal state the customer UI doesn't surface (per-day pacing ≤ cap,
+> cross-campaign suppression, machine-only withdrawal, Unipile-side
+> revocation); those stay a behind-the-scenes audit unless we build UI
+> surfaces for them. This section is reshaped in full when #12 starts.
 
 ## What to build
 
