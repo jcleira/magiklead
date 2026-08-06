@@ -173,8 +173,10 @@ func main() {
 		r.Post("/webhooks/clerk", clerkH.HandleWebhook)
 		r.Post("/webhooks/stripe", billingH.HandleWebhook)
 		// Unipile webhook (public): Unipile reaches it with no Clerk
-		// session — authentication is the HMAC signature over the body
-		// plus the signed metadata in the account.connected payload.
+		// session — authentication is the static Unipile-Auth header we
+		// set on each registration, constant-time compared against
+		// UNIPILE_WEBHOOK_SECRET, plus the signed metadata in the
+		// account.connected payload. Unipile has no body signing.
 		r.Post("/webhooks/unipile", unipileH.Webhook)
 
 		// GDPR right-to-erasure (public) — request/confirm flow:

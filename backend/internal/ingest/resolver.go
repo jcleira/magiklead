@@ -14,6 +14,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 
+	"github.com/jcleira/magiklead/backend/internal/linkedin/liurl"
 	"github.com/jcleira/magiklead/backend/internal/repository"
 )
 
@@ -54,9 +55,16 @@ func NewDefaultResolver() *DefaultResolver {
 }
 
 const (
-	identifierCIK      = "cik"
+	identifierCIK = "cik"
+	// identifierLinkedIn is the legacy person + current org LinkedIn type.
+	// Person identity has converged on identifierLinkedInURL; this constant
+	// now serves only the org path (organization_identifiers), which has no
+	// rail reader and is out of the unification's scope.
 	identifierLinkedIn = "linkedin"
-	identifierDomain   = "domain"
+	// identifierLinkedInURL is the unified person LinkedIn identity type.
+	// Every rail reader (lead search, due-invite/DM queries) filters on it.
+	identifierLinkedInURL = "linkedin_url"
+	identifierDomain      = "domain"
 )
 
 func (r *DefaultResolver) Resolve(ctx context.Context, q *repository.Queries, in ResolveInput) error {
@@ -439,8 +447,8 @@ func personIdentifiers(fields map[string]any) []identifier {
 	if v := firstString(fields, "person_cik"); v != "" {
 		out = append(out, identifier{identifierCIK, v})
 	}
-	if v := NormalizeLinkedInURL(firstString(fields, "linkedin_url", "linkedin")); v != "" {
-		out = append(out, identifier{identifierLinkedIn, v})
+	if v := liurl.Canonical(firstString(fields, "linkedin_url", "linkedin")); v != "" {
+		out = append(out, identifier{identifierLinkedInURL, v})
 	}
 	return out
 }
@@ -597,7 +605,7 @@ func blocklistHashes(fields map[string]any, ids []identifier) []string {
 		out = append(out, HashIdentifier(email))
 	}
 	for _, id := range ids {
-		if id.typ == identifierLinkedIn {
+		if id.typ == identifierLinkedInURL {
 			out = append(out, HashIdentifier(id.value))
 		}
 	}

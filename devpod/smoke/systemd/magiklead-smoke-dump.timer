@@ -1,0 +1,9 @@
+[Unit]
+Description=Nightly dump timer for the magiklead smoke devpod database
+
+[Timer]
+OnCalendar=*-*-* 03:17:00
+Persistent=true
+
+[Install]
+WantedBy=timers.target

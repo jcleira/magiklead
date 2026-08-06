@@ -10,7 +10,13 @@ services:
       DEVPOD_PROJECT: ${DEVPOD_PROJECT}
       APP_ENV: dev
       PORT: "8080"
-      APP_URL: https://api-${DEVPOD_NAME}.${DEVPOD_PROJECT}.localhost
+      # Public API base the backend stamps into hosted-auth notify_url
+      # (UnipileHandler.AuthURL). Defaults to the local literal for every
+      # pod; only the smoke worktree overrides it — to its public tunnel
+      # origin — via a gitignored worktree-root .env (MAGIKLEAD_PUBLIC_API_URL).
+      # See CLAUDE.md "Public base URL override". FRONTEND_URL stays local
+      # everywhere (redirects run in the operator's browser).
+      APP_URL: ${MAGIKLEAD_PUBLIC_API_URL:-https://api-${DEVPOD_NAME}.${DEVPOD_PROJECT}.localhost}
       FRONTEND_URL: https://${DEVPOD_NAME}.${DEVPOD_PROJECT}.localhost
       DATABASE_URL: ${DATABASE_URL}
       REDIS_URL: ${REDIS_URL}

@@ -19,6 +19,7 @@ import (
 
 	"github.com/jcleira/magiklead/backend/internal/email"
 	"github.com/jcleira/magiklead/backend/internal/ingest"
+	"github.com/jcleira/magiklead/backend/internal/linkedin/liurl"
 	"github.com/jcleira/magiklead/backend/internal/repository"
 	apierr "github.com/jcleira/magiklead/backend/pkg/errors"
 )
@@ -73,7 +74,7 @@ func (h *PrivacyHandler) RequestErasure(w http.ResponseWriter, r *http.Request) 
 	}
 
 	email := strings.ToLower(strings.TrimSpace(req.Email))
-	linkedin := ingest.NormalizeLinkedInURL(req.LinkedInURL)
+	linkedin := liurl.Canonical(req.LinkedInURL)
 	name := ingest.NormalizeName(req.Name)
 	company := strings.TrimSpace(req.Company)
 

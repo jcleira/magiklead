@@ -1,0 +1,7 @@
+[Unit]
+Description=Nightly pg_dump of the magiklead smoke devpod database
+After=docker.service
+
+[Service]
+Type=oneshot
+ExecStart=%h/.local/share/magiklead-smoke/bin/dump.sh smoke

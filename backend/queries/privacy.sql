@@ -16,11 +16,12 @@ WHERE LOWER(email) = LOWER($1)
   AND person_id IS NOT NULL;
 
 -- FindPersonIDsByLinkedIn returns person IDs whose person_identifiers
--- carries the given normalized LinkedIn URL. Caller is responsible
--- for normalization (see ingest/resolver.go normalizeLinkedInURL).
+-- carries the given canonical LinkedIn URL. Caller passes the canonical
+-- full-URL form (internal/linkedin/liurl.Canonical) under the unified
+-- identifier_type 'linkedin_url' — the same type every rail reader uses.
 -- name: FindPersonIDsByLinkedIn :many
 SELECT DISTINCT person_id FROM person_identifiers
-WHERE identifier_type = 'linkedin' AND identifier_value = $1;
+WHERE identifier_type = 'linkedin_url' AND identifier_value = $1;
 
 -- FindPersonIDsByNormalizedNameAndOrg matches the person's normalized
 -- name (alphabetically-sorted lowercase tokens, see resolver.go

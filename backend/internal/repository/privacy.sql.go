@@ -69,12 +69,13 @@ func (q *Queries) FindPersonIDsByEmail(ctx context.Context, lower string) ([]pgt
 
 const findPersonIDsByLinkedIn = `-- name: FindPersonIDsByLinkedIn :many
 SELECT DISTINCT person_id FROM person_identifiers
-WHERE identifier_type = 'linkedin' AND identifier_value = $1
+WHERE identifier_type = 'linkedin_url' AND identifier_value = $1
 `
 
 // FindPersonIDsByLinkedIn returns person IDs whose person_identifiers
-// carries the given normalized LinkedIn URL. Caller is responsible
-// for normalization (see ingest/resolver.go normalizeLinkedInURL).
+// carries the given canonical LinkedIn URL. Caller passes the canonical
+// full-URL form (internal/linkedin/liurl.Canonical) under the unified
+// identifier_type 'linkedin_url' — the same type every rail reader uses.
 func (q *Queries) FindPersonIDsByLinkedIn(ctx context.Context, identifierValue string) ([]pgtype.UUID, error) {
 	rows, err := q.db.Query(ctx, findPersonIDsByLinkedIn, identifierValue)
 	if err != nil {

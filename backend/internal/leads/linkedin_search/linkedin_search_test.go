@@ -181,6 +181,51 @@ func TestSearch_Idempotent(t *testing.T) {
 	assertCount(t, pool, 0, `SELECT count(*) FROM emails em JOIN persons p ON p.id=em.person_id WHERE p.canonical_name=$1`, "Jane Doe"+suffix)
 }
 
+// TestSearch_CanonicalizesURL feeds a deliberately messy profileURL through
+// the write-through and asserts the stored identifier is the single canonical
+// form (via liurl) — not the raw provider spelling — so an ingest-planted or
+// seed-planted row for the same person dedups against it on the exact string.
+func TestSearch_CanonicalizesURL(t *testing.T) {
+	pool := withPool(t)
+	ctx := context.Background()
+	suffix := uniqueSuffix()
+	slug := "canon" + strings.TrimPrefix(suffix, "-")
+
+	// Uppercase scheme + host, trailing slash, query string.
+	rawURL := "HTTP://WWW.LinkedIn.COM/in/" + slug + "/?trk=abc"
+	wantURL := "https://www.linkedin.com/in/" + slug
+
+	body := searchBody(t, []map[string]any{
+		{
+			"fullName":      "Canon Case" + suffix,
+			"firstName":     "Canon",
+			"lastName":      "Case",
+			"headline":      "Engineer",
+			"profileURL":    rawURL,
+			"companyName":   "Canon Co" + suffix,
+			"companyDomain": "canon-" + strings.TrimPrefix(suffix, "-") + ".test",
+		},
+	})
+	stub := newStub(t, 200, body)
+	m := linkedinsearch.New(pool, "dev", stub.Client())
+	m.SetBaseURL(stub.URL)
+
+	results, err := m.Search(ctx, linkedinsearch.Filters{Titles: []string{"Engineer"}, Limit: 10})
+	if err != nil {
+		t.Fatalf("Search: %v", err)
+	}
+	if len(results) != 1 {
+		t.Fatalf("results=%d, want 1", len(results))
+	}
+	if results[0].LinkedInURL != wantURL {
+		t.Errorf("returned LinkedInURL=%q want canonical %q", results[0].LinkedInURL, wantURL)
+	}
+
+	// Stored under the canonical form; the raw messy spelling is never persisted.
+	assertCount(t, pool, 1, `SELECT count(*) FROM person_identifiers WHERE identifier_type='linkedin_url' AND identifier_value=$1`, wantURL)
+	assertCount(t, pool, 0, `SELECT count(*) FROM person_identifiers WHERE identifier_value=$1`, rawURL)
+}
+
 func assertCount(t *testing.T, pool *pgxpool.Pool, want int, query string, args ...any) {
 	t.Helper()
 	var got int

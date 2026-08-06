@@ -73,14 +73,16 @@ func loadConnectWebhook(t *testing.T, unipileID, meta string) []byte {
 
 // postConnect signs a fresh metadata token binding unipileID to tenantID,
 // wraps it in the frozen connect body, and delivers it to the webhook exactly
-// as Unipile's notify_url callback would. Returns the recorder for the caller
-// to assert on.
+// as Unipile's notify_url callback would — crucially WITHOUT the Unipile-Auth
+// header. Unipile does not attach that header to the per-session hosted-auth
+// callback; the header'd variant this test used to send masked a real 401 that
+// blocked every live connect (found in the 2026-07 smoke). The bind therefore
+// authenticates on the signed metadata alone. Returns the recorder.
 func postConnect(t *testing.T, h *UnipileHandler, secret []byte, unipileID string, tenantID uuid.UUID) *httptest.ResponseRecorder {
 	t.Helper()
 	meta := signMeta(t, secret, tenantID, uuid.New(), time.Now().Add(10*time.Minute))
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/webhooks/unipile",
 		strings.NewReader(string(loadConnectWebhook(t, unipileID, meta))))
-	req.Header.Set("Unipile-Auth", testUnipileSecret)
 	rr := httptest.NewRecorder()
 	h.Webhook(rr, req)
 	return rr
@@ -199,5 +201,62 @@ func TestUnipile_Webhook_StatusWithoutMetadata_DoesNotBind(t *testing.T) {
 	}
 	if n != 0 {
 		t.Errorf("row count=%d want 0 (a no-metadata status must not bind an account)", n)
+	}
+}
+
+// TestUnipile_Webhook_NonConnectWithoutHeader_Rejected locks the boundary the
+// connect exemption must not widen: ONLY account.connected (authenticated by
+// its signed metadata) may pass without the Unipile-Auth header. Every other
+// event comes from a registered webhook that does carry the header, so a
+// header-less non-connect payload is a forgery and must 401 before any handler
+// runs.
+func TestUnipile_Webhook_NonConnectWithoutHeader_Rejected(t *testing.T) {
+	secret := []byte(testUnipileSecret)
+	mod := unipile.New("", "", secret, nil)
+	h := &UnipileHandler{svc: mod, stateSecret: secret}
+
+	// A messaging event (registered webhook) delivered with NO Unipile-Auth header.
+	body := []byte(`{"event":"message_received","account_id":"acc_x","chat_id":"c1","message_id":"m1"}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/webhooks/unipile", strings.NewReader(string(body)))
+	rr := httptest.NewRecorder()
+	h.Webhook(rr, req)
+	if rr.Code != http.StatusUnauthorized {
+		t.Fatalf("status=%d want 401 (a non-connect event without the header is a forgery)", rr.Code)
+	}
+}
+
+// TestUnipile_Webhook_ConnectWithoutHeader_BadMetadata_DoesNotBind proves the
+// connect exemption is safe: letting account.connected through without the
+// header does not let a forger bind, because handleAccountConnected still
+// verifies the metadata signature. A connect body carrying a garbage token
+// binds nothing (and answers 200 as a harmless, logged no-op).
+func TestUnipile_Webhook_ConnectWithoutHeader_BadMetadata_DoesNotBind(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	pool := acceptTestPool(t, ctx)
+	f := newConnectFixture(t, ctx, pool)
+
+	secret := []byte(testUnipileSecret)
+	mod := unipile.New("", "", secret, nil)
+	h := &UnipileHandler{svc: mod, queries: repository.New(pool), stateSecret: secret}
+
+	// account.connected shape, real account id, but a forged metadata token and
+	// no Unipile-Auth header.
+	body := loadConnectWebhook(t, f.unipileID, "not-a-valid-signed-token")
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/webhooks/unipile", strings.NewReader(string(body)))
+	rr := httptest.NewRecorder()
+	h.Webhook(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status=%d want 200 (a bad-metadata connect is a logged no-op)", rr.Code)
+	}
+
+	var n int
+	if err := pool.QueryRow(ctx,
+		`SELECT count(*) FROM linkedin_accounts WHERE unipile_account_id = $1`,
+		f.unipileID).Scan(&n); err != nil {
+		t.Fatalf("count: %v", err)
+	}
+	if n != 0 {
+		t.Errorf("row count=%d want 0 (a forged connect must not bind)", n)
 	}
 }
