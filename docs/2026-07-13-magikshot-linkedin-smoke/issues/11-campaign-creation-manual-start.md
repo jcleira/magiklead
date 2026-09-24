@@ -23,13 +23,17 @@
   The invite and DM queries now send only for `active` campaigns.
   (2) The PDL search ANDed every title and location, so a search for
   two titles or two countries found nobody, and PDL's 404 became a 502.
-- **Blocked: no LinkedIn-ready prospect source.** `/leads` now reaches
-  PDL (play #1 titles and countries, size `1-10`: 2,759 matches). But
-  the PDL write-through stores only `pdl_id`, not the LinkedIn URL that
-  PDL returns. The worker skips a lead with no `linkedin_url`, so a PDL
-  prospect can be saved but never invited. `linkedin_search` (RapidAPI)
-  writes `linkedin_url`, but no route uses it. Step 1 needs one of them
-  wired, or the PRD's CSV list — founder decision.
+- **Prospect source: resolved the same day (founder chose "save the
+  LinkedIn URL from PDL").** `/leads` reached PDL (play #1 titles and
+  countries, size `1-10`: 2,759 matches), but the PDL write-through
+  stored only `pdl_id`, and the worker skips a lead with no
+  `linkedin_url`. On this PDL plan `location_name` is also hidden, so
+  every PDL person landed with a NULL location, and any search with a
+  location dropped them all — the August "count 0, `pdl_called:true`".
+  The write-through now stores the canonical LinkedIn URL and rebuilds
+  the location from its parts. Live check (limit 3): HTTP 200, 3
+  results, each with a location and a canonical LinkedIn URL. Step 1 is
+  unblocked.
 
 Warm-up start date: 2026-07-29 (account creation; bound 2026-08-03)
 Warm-up complete confirmed: ______ (founder, against #05's completion
