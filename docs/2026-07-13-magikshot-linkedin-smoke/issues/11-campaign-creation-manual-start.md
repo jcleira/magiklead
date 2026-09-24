@@ -8,6 +8,29 @@
 `restricted` (`CREDENTIALS`) since 2026-08-04 — see the status note in
 [#06](./06-day-one-connect-ceremony.md). Step 0 clears it.
 
+**Status 2026-09-24:**
+
+- **Step 0 is done, in a different way.** The account is relinked and
+  bound (`_gtbOQ8dQ3aYT3bsPKptJA`, `active`) by a DB insert, not by a
+  Reconnect callback — see the 2026-09-23/24 note in
+  [#06](./06-day-one-connect-ceremony.md). Step 0.2 (clean standing) is
+  still the founder's check.
+- **Two defects found and fixed.** (1) The invite query ignored the
+  campaign status: a draft's queued leads were due at once, and Pause
+  did not stop invites. The query selected the 5 `cmd/seed` fixture
+  leads of the 2026-08-17 draft `a9608560…`. The worker was stopped, so
+  nothing was sent, and the draft is now deleted (founder decision).
+  The invite and DM queries now send only for `active` campaigns.
+  (2) The PDL search ANDed every title and location, so a search for
+  two titles or two countries found nobody, and PDL's 404 became a 502.
+- **Blocked: no LinkedIn-ready prospect source.** `/leads` now reaches
+  PDL (play #1 titles and countries, size `1-10`: 2,759 matches). But
+  the PDL write-through stores only `pdl_id`, not the LinkedIn URL that
+  PDL returns. The worker skips a lead with no `linkedin_url`, so a PDL
+  prospect can be saved but never invited. `linkedin_search` (RapidAPI)
+  writes `linkedin_url`, but no route uses it. Step 1 needs one of them
+  wired, or the PRD's CSV list — founder decision.
+
 Warm-up start date: 2026-07-29 (account creation; bound 2026-08-03)
 Warm-up complete confirmed: ______ (founder, against #05's completion
 criterion — the calendar gate)

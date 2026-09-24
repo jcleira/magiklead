@@ -63,6 +63,33 @@ zero LinkedIn campaigns and zero `linkedin_events`.
 - **Next:** reconnect before any send —
   [#11 step 0](./11-campaign-creation-manual-start.md).
 
+**Status change 2026-09-23/24: relinked in a new Unipile workspace,
+bound by a DB insert.** The Unipile subscription lapsed. The founder
+paid again and relinked the same LinkedIn account
+(`jose-corral-084bb6425`) in the Unipile dashboard on 2026-09-23
+14:27Z.
+
+- **New workspace.** The renewal came with a new DSN
+  (`https://api67.unipile.com:19786`) and a new API key, both now in
+  `.env.backend`. The old key returned 401 at its DSN
+  (`api59.unipile.com:18900`). The old account `v0DboRWMTQiYVSLUNZbmNg`
+  is gone. The new one is `_gtbOQ8dQ3aYT3bsPKptJA`, source status `OK`.
+  The three `magiklead-smoke-*` webhooks were already registered in the
+  new workspace, at the tunnel.
+- **Bind (founder decision).** A dashboard link sends no signed
+  `account.connected` callback, so the app did not know the account.
+  On 2026-09-24 one transaction deleted the stale `v0Dbo…` row and ran
+  the `UpsertLinkedInAccount` statement for the new id: row
+  `e576cdf6…`, `active`, `last_error` NULL. The founder chose this over
+  a second LinkedIn login through Settings, because the last login was
+  restricted within 16 hours. `GET /api/v1/linkedin/auth-url` returns
+  200 again, so Settings → **Reconnect** works.
+- **Still open:** no real `account.connected` callback has reached the
+  app. The 2026-08-03 bind was a replay, and this one is a DB insert.
+- **Dumps.** The August dumps in the table above are archived at
+  `~/.local/share/magiklead-smoke/dumps-archive-2026-08/`
+  (sha256-checked). The 2026-09-24 nightly dump pruned the originals.
+
 ## What to build
 
 Nothing new — this slice **executes** the runbook's day-0 checklist
