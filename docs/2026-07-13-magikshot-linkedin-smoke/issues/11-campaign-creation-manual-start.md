@@ -34,6 +34,23 @@
   the location from its parts. Live check (limit 3): HTTP 200, 3
   results, each with a location and a canonical LinkedIn URL. Step 1 is
   unblocked.
+- **ICP changed (founder decision, 2026-09-24): the smoke campaign
+  targets the LLC plays**, not magikshot play #1. That day's onboarding
+  analyzed an LLC-services website and generated 5 plays (law firms,
+  accounting firms, registered agents/gestorías, corporate legal,
+  non-resident LLC owners). It also created 5 **email** drafts, one per
+  play; they send nothing (drafts, no email account). **Discover Leads**
+  on one of them ran the old website-scrape engine and added 3 law-firm
+  people with guessed emails.
+- **Search cleanup and fix (founder decisions).** The 26 `cmd/seed`
+  test people, 7 test companies and 5 saved test leads are deleted
+  from the smoke DB: a search that the database cannot filter showed
+  25 of 25 test people. A page that the database cannot fill is now
+  topped up from PDL; before, 1 cached match blocked PDL for 90 days.
+  The description box filters nothing (PDL rejects `query_string`):
+  search with titles, industries, locations and size. Live check: the
+  law-firm play (Legal Services, United States, 51-200, limit 5)
+  returned 5 managing partners, each with a LinkedIn URL.
 
 Warm-up start date: 2026-07-29 (account creation; bound 2026-08-03)
 Warm-up complete confirmed: ______ (founder, against #05's completion
@@ -85,12 +102,13 @@ this slice exercises them.
       reads the oldest (restricted) row. The old Unipile account also
       breaks the #04 clean slate and the #12 clean disconnect. Record
       it as a defect; the founder decides the cleanup before **Start**.
-1. **Find prospects — `/leads`.** Search in the app (play #1 ICP:
-   content creators / personal-brand builders / coaches / consultants),
-   review, and save the target people. No CSV import — the saved search
-   *is* the list.
+1. **Find prospects — `/leads`.** Search in the app (the LLC plays' ICP
+   since 2026-09-24 — e.g. managing partners at US law firms, 51-200;
+   was play #1: content creators / coaches / consultants), review, and
+   save the target people. Clear the seeded description; it filters
+   nothing. No CSV import — the saved search *is* the list.
 2. **Author + create the campaign — `/campaigns/new-linkedin`.** Pick
-   play #1 and write the sequence directly in the editor:
+   the LLC play and write the sequence directly in the editor:
    - **step-0 connection note** — the founder's own words; and
    - **at least one DM** follow-up.
 
