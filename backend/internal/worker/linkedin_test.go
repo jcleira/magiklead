@@ -870,6 +870,132 @@ func TestProcessLinkedInQueue_PacerBudgetZero(t *testing.T) {
 	}
 }
 
+// TestProcessLinkedInQueue_SkipsCampaignNotActive pins the campaign-status
+// gate on the invite query. A lead added to a draft is 'queued' with no
+// next_send_at, and Pause leaves an 'active' lead with next_send_at
+// cleared — both look due to the step-0 filter, so without the gate a
+// connected account invites them before the founder clicks Start (found on
+// the smoke pod, where a draft's leads were selectable). The tick must not
+// resolve, send, bind, or start the warm-up clock. Flipping the campaign
+// to 'active' — what Start does — then sends exactly once, proving the
+// status is the only thing that held the lead.
+func TestProcessLinkedInQueue_SkipsCampaignNotActive(t *testing.T) {
+	cases := []struct {
+		name           string
+		campaignStatus string
+		leadStatus     string // next_send_at is NULL in both shapes
+	}{
+		{"draft", "draft", "queued"},   // AddPersonToCampaign on an unstarted draft
+		{"paused", "paused", "active"}, // ActivateCampaignLeads (Start), then PauseCampaignLeads
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+			pool := linkedInTestPool(t, ctx)
+			f := newLinkedInInviteFixture(t, ctx, pool)
+
+			if _, err := pool.Exec(ctx, `UPDATE campaigns SET status = $2 WHERE id = $1`, f.campaignID, tc.campaignStatus); err != nil {
+				t.Fatalf("set campaign status: %v", err)
+			}
+			if _, err := pool.Exec(ctx, `UPDATE campaign_leads SET status = $2, next_send_at = NULL WHERE id = $1`, f.leadID, tc.leadStatus); err != nil {
+				t.Fatalf("set lead status: %v", err)
+			}
+
+			sends, resolves := 0, 0
+			send := func(_ context.Context, _ unipile.InviteParams) (*unipile.InviteResult, error) {
+				sends++
+				return &unipile.InviteResult{InvitationID: "inv_gate_" + tc.name}, nil
+			}
+			resolve := func(ctx context.Context, profileURL, accountID string) (string, error) {
+				resolves++
+				return resolveOK(ctx, profileURL, accountID)
+			}
+
+			processLinkedInQueue(ctx, repository.New(pool), send, resolve, pacer.Standard())
+
+			if sends != 0 || resolves != 0 {
+				t.Fatalf("%s campaign: send calls=%d resolve calls=%d, want 0 and 0", tc.campaignStatus, sends, resolves)
+			}
+			if n := countRows(t, ctx, pool, `SELECT count(*) FROM linkedin_events WHERE campaign_lead_id = $1`, f.leadID); n != 0 {
+				t.Errorf("linkedin_events=%d want 0 (nothing sent)", n)
+			}
+			var status string
+			var acctID pgtype.UUID
+			if err := pool.QueryRow(ctx, `SELECT status, linkedin_account_id FROM campaign_leads WHERE id = $1`, f.leadID).Scan(&status, &acctID); err != nil {
+				t.Fatalf("scan lead: %v", err)
+			}
+			if status != tc.leadStatus || acctID.Valid {
+				t.Errorf("lead status=%q bound=%v, want %q and unbound (untouched)", status, acctID.Valid, tc.leadStatus)
+			}
+			var warmup pgtype.Timestamptz
+			var daily int32
+			if err := pool.QueryRow(ctx, `SELECT warmup_started_at, daily_invite_count FROM linkedin_accounts WHERE id = $1`, f.accountID).Scan(&warmup, &daily); err != nil {
+				t.Fatalf("scan account: %v", err)
+			}
+			if warmup.Valid || daily != 0 {
+				t.Errorf("warmup_started_at=%v daily_invite_count=%d, want unset and 0 (no invite went out)", warmup, daily)
+			}
+
+			// Start flips the campaign to active: the same lead now sends once.
+			if _, err := pool.Exec(ctx, `UPDATE campaigns SET status = 'active' WHERE id = $1`, f.campaignID); err != nil {
+				t.Fatalf("activate campaign: %v", err)
+			}
+			processLinkedInQueue(ctx, repository.New(pool), send, resolve, pacer.Standard())
+			if sends != 1 {
+				t.Errorf("after Start: send calls=%d want 1", sends)
+			}
+		})
+	}
+}
+
+// TestProcessLinkedInDMQueue_SkipsPausedCampaign pins the same gate on the
+// DM query: an acceptance that lands while the campaign is paused leaves
+// the lead due at step 1, and its DM must wait for Start. Flipping the
+// campaign back to 'active' sends it.
+func TestProcessLinkedInDMQueue_SkipsPausedCampaign(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	pool := linkedInTestPool(t, ctx)
+	f := newLinkedInDMFixture(t, ctx, pool)
+	seedMemberID(t, ctx, pool, personIDForURL(t, ctx, pool, f.profileURL), "ACoAAdmpaused07")
+
+	if _, err := pool.Exec(ctx, `UPDATE campaigns SET status = 'paused' WHERE id = $1`, f.campaignID); err != nil {
+		t.Fatalf("pause campaign: %v", err)
+	}
+
+	calls := 0
+	send := func(_ context.Context, _ unipile.MessageParams) (*unipile.MessageResult, error) {
+		calls++
+		return &unipile.MessageResult{MessageID: "msg_paused_1", ChatID: "chat_paused_1"}, nil
+	}
+	resolve := func(_ context.Context, _, _ string) (string, error) {
+		t.Errorf("DM resolved the member id upstream — a cached id must be reused")
+		return "", nil
+	}
+
+	processLinkedInDMQueue(ctx, repository.New(pool), suppression.New(pool), send, resolve)
+
+	if calls != 0 {
+		t.Fatalf("paused campaign: send calls=%d want 0", calls)
+	}
+	var step int32
+	if err := pool.QueryRow(ctx, `SELECT current_step FROM campaign_leads WHERE id = $1`, f.leadID).Scan(&step); err != nil {
+		t.Fatalf("scan lead: %v", err)
+	}
+	if step != 1 {
+		t.Errorf("current_step=%d want 1 (DM held, not advanced)", step)
+	}
+
+	if _, err := pool.Exec(ctx, `UPDATE campaigns SET status = 'active' WHERE id = $1`, f.campaignID); err != nil {
+		t.Fatalf("activate campaign: %v", err)
+	}
+	processLinkedInDMQueue(ctx, repository.New(pool), suppression.New(pool), send, resolve)
+	if calls != 1 {
+		t.Errorf("after Start: send calls=%d want 1", calls)
+	}
+}
+
 // TestProcessLinkedInQueue_SendErrorClassified proves a Unipile send
 // failure is classified into a short reason on a 'failed' linkedin_event
 // and the lead is NOT advanced — it stays queued at step 0 for a retry,

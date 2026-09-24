@@ -265,7 +265,7 @@ SELECT
     COALESCE(o.canonical_name, '')::text AS company,
     ce.title                             AS title
 FROM campaign_leads cl
-JOIN campaigns         c  ON c.id  = cl.campaign_id AND c.channel = 'linkedin'
+JOIN campaigns         c  ON c.id  = cl.campaign_id AND c.channel = 'linkedin' AND c.status = 'active'
 JOIN linkedin_accounts la ON la.id = cl.linkedin_account_id
 LEFT JOIN persons       p  ON p.id  = cl.person_id
 LEFT JOIN current_emp   ce ON ce.person_id = cl.person_id
@@ -305,6 +305,9 @@ type GetDueLinkedInDMLeadsRow struct {
 // or disconnected (but not yet row-deleted) account (issue #8): its
 // in-flight DM leads are held until it reconnects to active/warming, the
 // same health predicate pickLinkedInAccount applies on the invite tick.
+// As on the invite query, only an 'active' campaign sends: an acceptance
+// that lands while the campaign is paused schedules its DM, which then
+// waits for Start.
 // linkedin_chat_id is NULL for the first DM (no chat exists until we start
 // one) and set thereafter. Recipient + name/title/company are resolved for
 // personalization, mirroring the invite query.
@@ -370,7 +373,7 @@ SELECT
     COALESCE(o.canonical_name, '')::text AS company,
     ce.title                             AS title
 FROM campaign_leads cl
-JOIN campaigns        c  ON c.id  = cl.campaign_id AND c.channel = 'linkedin'
+JOIN campaigns        c  ON c.id  = cl.campaign_id AND c.channel = 'linkedin' AND c.status = 'active'
 LEFT JOIN persons       p  ON p.id  = cl.person_id
 LEFT JOIN current_emp   ce ON ce.person_id = cl.person_id
 LEFT JOIN organizations o  ON o.id = ce.organization_id
@@ -399,11 +402,15 @@ type GetDueLinkedInInviteLeadsRow struct {
 // LinkedIn campaigns that are ready to send now. A lead qualifies while
 // it is still at step 0 and either queued (never launched-activated) or
 // active+due — the LinkedIn launch path runs ActivateCampaignLeads just
-// like email, so both states appear. The recipient identifier is the
-// person's canonical linkedin_url; name/title/company are resolved for
-// note personalization (no email join — the LinkedIn rail never touches
-// emails). tenant_id rides along so the tick can pick the tenant's
-// connected account. Mirrors GetDueLeads's CTE shape.
+// like email, so both states appear. Only an 'active' campaign sends: a
+// lead added to a draft is 'queued' with no next_send_at, and Pause
+// clears next_send_at — both read as due here, so the campaign status is
+// the gate that keeps drafts and paused campaigns silent until Start.
+// The recipient identifier is the person's canonical linkedin_url;
+// name/title/company are resolved for note personalization (no email
+// join — the LinkedIn rail never touches emails). tenant_id rides along
+// so the tick can pick the tenant's connected account. Mirrors
+// GetDueLeads's CTE shape.
 func (q *Queries) GetDueLinkedInInviteLeads(ctx context.Context, limit int32) ([]GetDueLinkedInInviteLeadsRow, error) {
 	rows, err := q.db.Query(ctx, getDueLinkedInInviteLeads, limit)
 	if err != nil {
