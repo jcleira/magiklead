@@ -171,6 +171,37 @@ func (q *Queries) FindPersonByPDLID(ctx context.Context, identifierValue string)
 	return i, err
 }
 
+const linkPersonIdentifierIfAbsent = `-- name: LinkPersonIdentifierIfAbsent :execrows
+INSERT INTO person_identifiers (person_id, identifier_type, identifier_value, is_primary)
+VALUES ($1, $2, $3, $4)
+ON CONFLICT DO NOTHING
+`
+
+type LinkPersonIdentifierIfAbsentParams struct {
+	PersonID        pgtype.UUID `json:"person_id"`
+	IdentifierType  string      `json:"identifier_type"`
+	IdentifierValue string      `json:"identifier_value"`
+	IsPrimary       pgtype.Bool `json:"is_primary"`
+}
+
+// LinkPersonIdentifierIfAbsent attaches an identifier to a person unless
+// the value is already stored — on this person or on another, since
+// identifier_value is globally UNIQUE. Returns the rows inserted (0 or 1).
+// The PDL write-through links pdl_id and linkedin_url with it, so a
+// re-run is a no-op and a value another source already holds is kept.
+func (q *Queries) LinkPersonIdentifierIfAbsent(ctx context.Context, arg LinkPersonIdentifierIfAbsentParams) (int64, error) {
+	result, err := q.db.Exec(ctx, linkPersonIdentifierIfAbsent,
+		arg.PersonID,
+		arg.IdentifierType,
+		arg.IdentifierValue,
+		arg.IsPrimary,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const updateEmploymentTitle = `-- name: UpdateEmploymentTitle :exec
 UPDATE employments SET title = $2 WHERE id = $1
 `

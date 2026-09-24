@@ -1,12 +1,13 @@
 // Package liurl defines the one canonical form for a LinkedIn profile URL
 // and is the single place that form is defined. Every writer of a person's
 // LinkedIn identity — the ingest resolver, cmd/seed, the live-search
-// write-through, and the curated CSV loader — stores Canonical's output
-// under identifier_type "linkedin_url", and every LinkedIn-rail reader
-// filters on that type. Converging both the type and the value spelling is
-// what makes the same human, found by two different sources, dedup to one
-// person_identifiers row (identifier_value is globally UNIQUE, and dedup
-// matches on the exact string).
+// write-through, the PDL write-through, and the curated CSV loader —
+// stores Canonical's output under identifier_type "linkedin_url", and
+// every LinkedIn-rail reader filters on that type. Converging both the
+// type and the value spelling is what makes the same human, found by two
+// different sources, dedup to one person_identifiers row
+// (identifier_value is globally UNIQUE, and dedup matches on the exact
+// string).
 //
 // The canonical form is:
 //

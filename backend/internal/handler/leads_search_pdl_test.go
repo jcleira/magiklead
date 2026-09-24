@@ -280,6 +280,80 @@ func TestLeadSearch_PDLNoRecords_EmptyNot502(t *testing.T) {
 	}
 }
 
+// TestLeadSearch_PDLGatedRecord_ShownWithLocationAndLinkedIn walks the
+// LinkedIn prospecting path end to end. The smoke's PDL plan hides
+// location_name but sends the location parts and the LinkedIn URL. The
+// person used to land with a NULL location, so the canonical re-query
+// behind any location filter dropped them, and with no linkedin_url the
+// LinkedIn rail could never invite them. Now the search returns them,
+// placed and with a profile link.
+func TestLeadSearch_PDLGatedRecord_ShownWithLocationAndLinkedIn(t *testing.T) {
+	pool := withPool(t)
+	tenantID := freshTenant(t, pool)
+	suffix := "-" + uuid.NewString()[:8]
+
+	body := mustJSON(t, map[string]any{
+		"status": 200,
+		"data": []map[string]any{{
+			"id":                  "pdl-gated" + suffix,
+			"full_name":           "casey creator" + suffix,
+			"first_name":          "casey",
+			"last_name":           "creator",
+			"job_title":           "content creator" + suffix,
+			"job_company_name":    "Creator Co",
+			"job_company_website": "creatorco-" + strings.TrimPrefix(suffix, "-") + ".test",
+			"job_company_size":    "1-10",
+			"location_name":       true,
+			"location_country":    "utopia" + suffix,
+			"linkedin_url":        "linkedin.com/in/casey-creator" + suffix,
+			"work_email":          true,
+		}},
+	})
+	stub := newStub(t, 200, body)
+	pdlModule := pdl.New(pool, "dev", stub.Client())
+	pdlModule.SetBaseURL(stub.URL)
+
+	h := handler.NewLeadSearchHandler(repository.New(pool), pdlModule)
+
+	reqBody := mustJSON(t, map[string]any{
+		"titles":    []string{"Content Creator" + suffix},
+		"locations": []string{"Utopia" + suffix},
+		"limit":     5,
+	})
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/leads/search",
+		bytes.NewReader(reqBody))
+	req.Header.Set("Content-Type", "application/json")
+	req = req.WithContext(context.WithValue(req.Context(), middleware.TenantIDKey, tenantID))
+	rr := httptest.NewRecorder()
+
+	h.Search(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rr.Code, rr.Body.String())
+	}
+	var resp struct {
+		Results []struct {
+			Location    string `json:"location"`
+			LinkedInURL string `json:"linkedin_url"`
+		} `json:"results"`
+		Count     int  `json:"count"`
+		PDLCalled bool `json:"pdl_called"`
+	}
+	if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("unmarshal: %v body=%s", err, rr.Body.String())
+	}
+	if !resp.PDLCalled || resp.Count != 1 {
+		t.Fatalf("pdl_called=%v count=%d, want true and 1 (the location filter must keep the PDL person)", resp.PDLCalled, resp.Count)
+	}
+	r := resp.Results[0]
+	if r.Location != "utopia"+suffix {
+		t.Errorf("location=%q, want %q", r.Location, "utopia"+suffix)
+	}
+	if want := "https://www.linkedin.com/in/casey-creator" + suffix; r.LinkedInURL != want {
+		t.Errorf("linkedin_url=%q, want %q", r.LinkedInURL, want)
+	}
+}
+
 // TestLeadSearch_PDLFallback_OnShadowedEmailless covers the has_email
 // cache-shadow guard. A canonical person that matches the ICP and is
 // flagged has_email=TRUE but has NO actual address (exactly what a

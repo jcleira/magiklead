@@ -35,6 +35,16 @@ JOIN person_identifiers pi ON pi.person_id = p.id
 WHERE pi.identifier_type = 'pdl_id' AND pi.identifier_value = $1
 LIMIT 1;
 
+-- LinkPersonIdentifierIfAbsent attaches an identifier to a person unless
+-- the value is already stored — on this person or on another, since
+-- identifier_value is globally UNIQUE. Returns the rows inserted (0 or 1).
+-- The PDL write-through links pdl_id and linkedin_url with it, so a
+-- re-run is a no-op and a value another source already holds is kept.
+-- name: LinkPersonIdentifierIfAbsent :execrows
+INSERT INTO person_identifiers (person_id, identifier_type, identifier_value, is_primary)
+VALUES ($1, $2, $3, $4)
+ON CONFLICT DO NOTHING;
+
 -- name: CreatePersonFromPDL :one
 INSERT INTO persons (canonical_name, first_name, last_name, normalized_name, location, has_email, updated_at)
 VALUES ($1, $2, $3, $4, $5, $6, NOW())

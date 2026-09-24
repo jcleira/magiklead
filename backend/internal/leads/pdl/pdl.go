@@ -1,9 +1,9 @@
 // Package pdl integrates People Data Labs as the real-data spine
 // behind the canonical person graph. PDL search results write through
-// to the canonical (persons, organizations, employments, emails) so
-// subsequent identical lookups across any tenant hit the cache for
-// free; stale rows (>90 days) re-trigger a PDL call from the handler
-// layer.
+// to the canonical (persons, organizations, employments, emails, and
+// the person's LinkedIn URL) so subsequent identical lookups across any
+// tenant hit the cache for free; stale rows (>90 days) re-trigger a PDL
+// call from the handler layer.
 //
 // Per docs/2026-05-07-real-product-release/issues/07-pdl-integration.md.
 package pdl
@@ -25,6 +25,7 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/jcleira/magiklead/backend/internal/linkedin/liurl"
 	"github.com/jcleira/magiklead/backend/internal/repository"
 )
 
@@ -46,6 +47,12 @@ const VerificationMethod = "pdl-verified"
 // PDLIdentifierType keys person_identifiers rows that link a canonical
 // person to its PDL provenance.
 const PDLIdentifierType = "pdl_id"
+
+// LinkedInIdentifierType keys the person_identifiers row that holds a
+// person's LinkedIn profile in liurl.Canonical form — the identifier the
+// LinkedIn rail invites by. Without it a PDL prospect can be saved but
+// never invited.
+const LinkedInIdentifierType = "linkedin_url"
 
 // Common errors. The handler maps each to the right HTTP response;
 // tests assert each one fires on the matching PDL status code.
@@ -265,25 +272,27 @@ func (m *Module) Enrich(ctx context.Context, personID uuid.UUID) (Email, error) 
 }
 
 // writeThrough lands one PDL record in the canonical: organization →
-// person → person_identifier → employment → email (if present).
-// Returns the canonical view of the record.
+// person → identifiers (pdl_id, and linkedin_url when PDL sends one) →
+// employment → email (if present). Returns the canonical view of the
+// record.
 func (m *Module) writeThrough(ctx context.Context, rec pdlPerson) (Person, error) {
 	org, err := m.upsertOrganization(ctx, rec)
 	if err != nil {
 		return Person{}, err
 	}
-	person, isNew, err := m.upsertPerson(ctx, rec)
+	linkedinURL := liurl.Canonical(rec.LinkedInURL.Value)
+	person, err := m.upsertPerson(ctx, rec, linkedinURL)
 	if err != nil {
 		return Person{}, err
 	}
-	if isNew {
-		if err := m.q.CreatePersonIdentifier(ctx, repository.CreatePersonIdentifierParams{
-			PersonID:        person.ID,
-			IdentifierType:  PDLIdentifierType,
-			IdentifierValue: rec.ID,
-			IsPrimary:       pgtype.Bool{Bool: true, Valid: true},
-		}); err != nil {
-			return Person{}, fmt.Errorf("pdl: link pdl_id: %w", err)
+	// Each link is a no-op when the value is already stored, so a re-run
+	// adds nothing and a person found by one identity gains the other.
+	if err := m.linkIdentifier(ctx, person.ID, PDLIdentifierType, rec.ID); err != nil {
+		return Person{}, err
+	}
+	if linkedinURL != "" {
+		if err := m.linkIdentifier(ctx, person.ID, LinkedInIdentifierType, linkedinURL); err != nil {
+			return Person{}, err
 		}
 	}
 
@@ -363,36 +372,100 @@ func (m *Module) upsertOrganization(ctx context.Context, rec pdlPerson) (reposit
 	})
 }
 
-// upsertPerson returns the canonical row and whether it was newly
-// inserted (the caller writes the pdl_id identifier only on inserts).
-func (m *Module) upsertPerson(ctx context.Context, rec pdlPerson) (repository.Person, bool, error) {
+// upsertPerson resolves a PDL record to one canonical person and
+// refreshes it from the record, or creates the person when nothing
+// matches. The caller links the identifiers.
+func (m *Module) upsertPerson(ctx context.Context, rec pdlPerson, linkedinURL string) (repository.Person, error) {
 	emailable := hasEmail(rec)
-	existing, err := m.q.FindPersonByPDLID(ctx, rec.ID)
+	location := pgText(personLocation(rec))
+	existing, err := m.findPerson(ctx, rec.ID, linkedinURL)
 	if err == nil {
-		updated, err := m.q.UpdatePersonFromPDL(ctx, repository.UpdatePersonFromPDLParams{
+		return m.q.UpdatePersonFromPDL(ctx, repository.UpdatePersonFromPDLParams{
 			ID:             existing.ID,
 			CanonicalName:  rec.FullName,
 			FirstName:      pgText(rec.FirstName),
 			LastName:       pgText(rec.LastName),
 			NormalizedName: normalize(rec.FullName),
-			Location:       pgText(rec.LocationName.Value),
+			Location:       location,
 			HasEmail:       emailable,
 		})
-		return updated, false, err
 	}
 	if !errors.Is(err, pgx.ErrNoRows) {
-		return repository.Person{}, false, fmt.Errorf("pdl: lookup person: %w", err)
+		return repository.Person{}, fmt.Errorf("pdl: lookup person: %w", err)
 	}
 
-	created, err := m.q.CreatePersonFromPDL(ctx, repository.CreatePersonFromPDLParams{
+	return m.q.CreatePersonFromPDL(ctx, repository.CreatePersonFromPDLParams{
 		CanonicalName:  rec.FullName,
 		FirstName:      pgText(rec.FirstName),
 		LastName:       pgText(rec.LastName),
 		NormalizedName: normalize(rec.FullName),
-		Location:       pgText(rec.LocationName.Value),
+		Location:       location,
 		HasEmail:       emailable,
 	})
-	return created, true, err
+}
+
+// findPerson returns the person already stored for a PDL record: by its
+// canonical LinkedIn URL first, so a human another source stored (the
+// LinkedIn search, the seed, the ingest resolver) is reused rather than
+// duplicated, then by its pdl_id. pgx.ErrNoRows means neither matched.
+func (m *Module) findPerson(ctx context.Context, pdlID, linkedinURL string) (repository.Person, error) {
+	if linkedinURL != "" {
+		p, err := m.q.FindPersonByIdentifier(ctx, repository.FindPersonByIdentifierParams{
+			IdentifierType:  LinkedInIdentifierType,
+			IdentifierValue: linkedinURL,
+		})
+		if !errors.Is(err, pgx.ErrNoRows) {
+			return p, err
+		}
+	}
+	return m.q.FindPersonByPDLID(ctx, pdlID)
+}
+
+// linkIdentifier stores an identifier on a person unless the value is
+// already stored. A value held by another person — the same human stored
+// twice by two sources before this link existed — stays where it is;
+// merging the two rows is out of scope, so it is only logged.
+func (m *Module) linkIdentifier(ctx context.Context, personID pgtype.UUID, idType, value string) error {
+	n, err := m.q.LinkPersonIdentifierIfAbsent(ctx, repository.LinkPersonIdentifierIfAbsentParams{
+		PersonID:        personID,
+		IdentifierType:  idType,
+		IdentifierValue: value,
+		IsPrimary:       pgtype.Bool{Bool: true, Valid: true},
+	})
+	if err != nil {
+		return fmt.Errorf("pdl: link %s: %w", idType, err)
+	}
+	if n > 0 {
+		return nil
+	}
+	holder, err := m.q.FindPersonByIdentifier(ctx, repository.FindPersonByIdentifierParams{
+		IdentifierType:  idType,
+		IdentifierValue: value,
+	})
+	if err == nil && holder.ID != personID {
+		log.Printf("pdl: %s already on person %s; not linked to %s",
+			idType, uuid.UUID(holder.ID.Bytes), uuid.UUID(personID.Bytes))
+	}
+	return nil
+}
+
+// personLocation is the person's location as PDL's location_name spells
+// it ("locality, region, country"). Plans without contact-data access
+// send location_name as a bare presence flag but still send the parts,
+// so it is rebuilt from those: SearchPersons filters locations with ILIKE
+// on this column, and a NULL hid the person from every search that
+// named a location.
+func personLocation(rec pdlPerson) string {
+	if rec.LocationName.Value != "" {
+		return rec.LocationName.Value
+	}
+	parts := make([]string, 0, 3)
+	for _, part := range []pdlOptString{rec.LocationLocality, rec.LocationRegion, rec.LocationCountry} {
+		if part.Value != "" {
+			parts = append(parts, part.Value)
+		}
+	}
+	return strings.Join(parts, ", ")
 }
 
 func (m *Module) upsertEmployment(ctx context.Context, personID, orgID pgtype.UUID, title string) error {
@@ -600,6 +673,10 @@ type pdlPerson struct {
 	JobCompanyIndustry string       `json:"job_company_industry"`
 	JobCompanySize     string       `json:"job_company_size"`
 	LocationName       pdlOptString `json:"location_name"`
+	LocationLocality   pdlOptString `json:"location_locality"`
+	LocationRegion     pdlOptString `json:"location_region"`
+	LocationCountry    pdlOptString `json:"location_country"`
+	LinkedInURL        pdlOptString `json:"linkedin_url"`
 	WorkEmail          pdlOptString `json:"work_email"`
 	Emails             pdlMails     `json:"emails"`
 }

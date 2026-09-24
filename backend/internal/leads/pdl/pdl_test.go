@@ -208,6 +208,173 @@ func TestSearch_Idempotent(t *testing.T) {
 	}
 }
 
+// TestSearch_WriteThrough_GatedRecord covers the record shape the smoke's
+// PDL plan returns: location_name and work_email come back as presence
+// flags, while linkedin_url and the location parts are real values. The
+// write-through stores the LinkedIn URL in canonical form — without it a
+// PDL prospect can be saved but never invited — and rebuilds the location
+// from its parts, since a NULL location hid the person from every search
+// that named one. A gated linkedin_url stores no identifier, and a second
+// run adds nothing.
+func TestSearch_WriteThrough_GatedRecord(t *testing.T) {
+	pool := withPool(t)
+	ctx := context.Background()
+	suffix := uniqueSuffix()
+
+	body := mustJSON(t, map[string]any{
+		"status": 200,
+		"data": []map[string]any{
+			{
+				"id":                  "pdl-ada" + suffix,
+				"full_name":           "ada coach" + suffix,
+				"first_name":          "ada",
+				"last_name":           "coach",
+				"job_title":           "executive coach",
+				"job_company_name":    "Coach Co",
+				"job_company_website": "coachco-" + strings.TrimPrefix(suffix, "-") + ".test",
+				"job_company_size":    "1-10",
+				"location_name":       true,
+				"location_locality":   "austin",
+				"location_region":     "texas",
+				"location_country":    "united states",
+				"linkedin_url":        "linkedin.com/in/Ada-Coach" + suffix,
+				"work_email":          true,
+			},
+			{
+				"id":                  "pdl-ben" + suffix,
+				"full_name":           "ben gated" + suffix,
+				"job_title":           "consultant",
+				"job_company_name":    "Gated Co",
+				"job_company_website": "gatedco-" + strings.TrimPrefix(suffix, "-") + ".test",
+				"location_name":       true,
+				"location_country":    "canada",
+				"linkedin_url":        true,
+			},
+		},
+	})
+	stub := newStub(t, 200, body)
+	m := pdl.New(pool, "dev", stub.Client())
+	m.SetBaseURL(stub.URL)
+
+	for run := 1; run <= 2; run++ {
+		if _, err := m.Search(ctx, pdl.Filters{Titles: []string{"executive coach", "consultant"}}); err != nil {
+			t.Fatalf("run %d: Search: %v", run, err)
+		}
+	}
+
+	var adaID uuid.UUID
+	var adaLocation string
+	if err := pool.QueryRow(ctx, `
+		SELECT p.id, COALESCE(p.location, '') FROM persons p
+		JOIN person_identifiers pi ON pi.person_id = p.id
+		WHERE pi.identifier_type = 'pdl_id' AND pi.identifier_value = $1`, "pdl-ada"+suffix).
+		Scan(&adaID, &adaLocation); err != nil {
+		t.Fatalf("find ada: %v", err)
+	}
+	if adaLocation != "austin, texas, united states" {
+		t.Errorf("ada location=%q, want it rebuilt from the parts", adaLocation)
+	}
+	var adaLinks int
+	var adaURL string
+	if err := pool.QueryRow(ctx, `
+		SELECT count(*), COALESCE(max(identifier_value), '') FROM person_identifiers
+		WHERE person_id = $1 AND identifier_type = 'linkedin_url'`, adaID).Scan(&adaLinks, &adaURL); err != nil {
+		t.Fatalf("ada linkedin_url: %v", err)
+	}
+	if wantURL := "https://www.linkedin.com/in/ada-coach" + suffix; adaLinks != 1 || adaURL != wantURL {
+		t.Errorf("ada linkedin_url rows=%d value=%q, want 1 row %q", adaLinks, adaURL, wantURL)
+	}
+
+	var benLocation string
+	var benLinks int
+	if err := pool.QueryRow(ctx, `
+		SELECT COALESCE(p.location, ''),
+		       (SELECT count(*) FROM person_identifiers li
+		        WHERE li.person_id = p.id AND li.identifier_type = 'linkedin_url')
+		FROM persons p
+		JOIN person_identifiers pi ON pi.person_id = p.id
+		WHERE pi.identifier_type = 'pdl_id' AND pi.identifier_value = $1`, "pdl-ben"+suffix).
+		Scan(&benLocation, &benLinks); err != nil {
+		t.Fatalf("find ben: %v", err)
+	}
+	if benLocation != "canada" || benLinks != 0 {
+		t.Errorf("ben location=%q linkedin_url rows=%d, want %q and 0 (gated URL)", benLocation, benLinks, "canada")
+	}
+
+	var pdlLinks int
+	if err := pool.QueryRow(ctx, `
+		SELECT count(*) FROM person_identifiers
+		WHERE identifier_type = 'pdl_id' AND identifier_value IN ($1, $2)`, "pdl-ada"+suffix, "pdl-ben"+suffix).
+		Scan(&pdlLinks); err != nil {
+		t.Fatalf("count pdl_id links: %v", err)
+	}
+	if pdlLinks != 2 {
+		t.Errorf("pdl_id links=%d after two runs, want 2 (one per record)", pdlLinks)
+	}
+}
+
+// TestSearch_ReusesPersonKnownByLinkedIn: a human another source already
+// stored under a LinkedIn URL (the LinkedIn search, the seed, the ingest
+// resolver) is the same person when PDL returns them — matched on the
+// canonical URL, whatever spelling PDL sends — so the record updates that
+// person and links its pdl_id instead of creating a duplicate.
+func TestSearch_ReusesPersonKnownByLinkedIn(t *testing.T) {
+	pool := withPool(t)
+	ctx := context.Background()
+	suffix := uniqueSuffix()
+	knownURL := "https://www.linkedin.com/in/grace-known" + suffix
+
+	var knownID uuid.UUID
+	if err := pool.QueryRow(ctx, `INSERT INTO persons (canonical_name, normalized_name) VALUES ($1, $2) RETURNING id`,
+		"Grace Known"+suffix, "grace known"+suffix).Scan(&knownID); err != nil {
+		t.Fatalf("seed person: %v", err)
+	}
+	if _, err := pool.Exec(ctx, `INSERT INTO person_identifiers (person_id, identifier_type, identifier_value, is_primary) VALUES ($1, 'linkedin_url', $2, TRUE)`,
+		knownID, knownURL); err != nil {
+		t.Fatalf("seed linkedin_url: %v", err)
+	}
+
+	body := mustJSON(t, map[string]any{
+		"status": 200,
+		"data": []map[string]any{{
+			"id":                  "pdl-grace" + suffix,
+			"full_name":           "grace known" + suffix,
+			"job_title":           "content creator",
+			"job_company_name":    "Known Co",
+			"job_company_website": "knownco-" + strings.TrimPrefix(suffix, "-") + ".test",
+			"location_country":    "australia",
+			"linkedin_url":        "http://LinkedIn.com/in/Grace-Known" + suffix + "/",
+		}},
+	})
+	stub := newStub(t, 200, body)
+	m := pdl.New(pool, "dev", stub.Client())
+	m.SetBaseURL(stub.URL)
+
+	results, err := m.Search(ctx, pdl.Filters{Titles: []string{"content creator"}})
+	if err != nil {
+		t.Fatalf("Search: %v", err)
+	}
+	if len(results) != 1 || results[0].PersonID != knownID {
+		t.Fatalf("results=%+v, want the one known person %s", results, knownID)
+	}
+
+	var pdlOwner uuid.UUID
+	if err := pool.QueryRow(ctx, `SELECT person_id FROM person_identifiers WHERE identifier_type = 'pdl_id' AND identifier_value = $1`,
+		"pdl-grace"+suffix).Scan(&pdlOwner); err != nil {
+		t.Fatalf("pdl_id link: %v", err)
+	}
+	if pdlOwner != knownID {
+		t.Errorf("pdl_id on person %s, want the known person %s", pdlOwner, knownID)
+	}
+	var location string
+	if err := pool.QueryRow(ctx, `SELECT location FROM persons WHERE id = $1`, knownID).Scan(&location); err != nil {
+		t.Fatalf("known location: %v", err)
+	}
+	if location != "australia" {
+		t.Errorf("known person location=%q, want %q (refreshed from PDL)", location, "australia")
+	}
+}
+
 func TestSearch_FailurePaths(t *testing.T) {
 	pool := withPool(t)
 	ctx := context.Background()
