@@ -280,6 +280,103 @@ func TestLeadSearch_PDLNoRecords_EmptyNot502(t *testing.T) {
 	}
 }
 
+// TestLeadSearch_PDLTopsUpPartialPage: one fresh canonical match used to
+// count as a full cache hit, so the first search for an ICP capped every
+// later one at what it had cached. On the smoke pod, three people from a
+// limit-3 check held the play #1 search at 3 results. Now a page the
+// canonical cannot fill is topped up from PDL.
+func TestLeadSearch_PDLTopsUpPartialPage(t *testing.T) {
+	pool := withPool(t)
+	tenantID := freshTenant(t, pool)
+	suffix := "-" + uuid.NewString()[:8]
+	industry := "topup-industry" + suffix
+
+	record := func(id, name string) map[string]any {
+		return map[string]any{
+			"id":                   "pdl-" + id + suffix,
+			"full_name":            name + suffix,
+			"job_title":            "consultant",
+			"job_company_name":     name + " Co",
+			"job_company_website":  id + "-" + strings.TrimPrefix(suffix, "-") + ".test",
+			"job_company_industry": industry,
+			"location_country":     "canada",
+		}
+	}
+	search := func(records ...map[string]any) (count int, pdlCalled bool, hits int) {
+		t.Helper()
+		stub := newStub(t, 200, mustJSON(t, map[string]any{"status": 200, "data": records}))
+		pdlModule := pdl.New(pool, "dev", stub.Client())
+		pdlModule.SetBaseURL(stub.URL)
+		h := handler.NewLeadSearchHandler(repository.New(pool), pdlModule)
+
+		req := httptest.NewRequest(http.MethodPost, "/api/v1/leads/search",
+			bytes.NewReader(mustJSON(t, map[string]any{"industries": []string{industry}, "limit": 5})))
+		req.Header.Set("Content-Type", "application/json")
+		req = req.WithContext(context.WithValue(req.Context(), middleware.TenantIDKey, tenantID))
+		rr := httptest.NewRecorder()
+		h.Search(rr, req)
+		if rr.Code != http.StatusOK {
+			t.Fatalf("status=%d body=%s", rr.Code, rr.Body.String())
+		}
+		var resp struct {
+			Count     int  `json:"count"`
+			PDLCalled bool `json:"pdl_called"`
+		}
+		if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
+			t.Fatalf("unmarshal: %v body=%s", err, rr.Body.String())
+		}
+		return resp.Count, resp.PDLCalled, stub.calls
+	}
+
+	// First search: the canonical is empty, and PDL returns one person.
+	if count, called, _ := search(record("one", "first person")); count != 1 || !called {
+		t.Fatalf("first search count=%d pdl_called=%v, want 1 and true", count, called)
+	}
+	// Second search: the canonical holds one fresh match — a partial
+	// page — so PDL is asked again, and its new people fill the page.
+	count, called, hits := search(record("one", "first person"), record("two", "second person"), record("three", "third person"))
+	if !called || hits != 1 {
+		t.Fatalf("second search pdl_called=%v PDL hits=%d, want one top-up call", called, hits)
+	}
+	if count != 3 {
+		t.Errorf("second search count=%d, want 3 (1 cached + 2 new)", count)
+	}
+}
+
+// TestLeadSearch_DescriptionAlone_NeverCallsPDL: PDL rejects
+// query_string, so the onboarding description cannot narrow a PDL
+// search. A search with only a description stays on the canonical even
+// when the page is not full; otherwise the top-up would pay for an
+// unfiltered PDL query.
+func TestLeadSearch_DescriptionAlone_NeverCallsPDL(t *testing.T) {
+	pool := withPool(t)
+	tenantID := freshTenant(t, pool)
+
+	stub := newStub(t, 200, []byte(`{"status":200,"data":[]}`))
+	pdlModule := pdl.New(pool, "dev", stub.Client())
+	pdlModule.SetBaseURL(stub.URL)
+	h := handler.NewLeadSearchHandler(repository.New(pool), pdlModule)
+
+	reqBody := mustJSON(t, map[string]any{
+		"description": "Managing Partner / Tax Partner at Accounting, 15-300",
+		"limit":       200,
+	})
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/leads/search",
+		bytes.NewReader(reqBody))
+	req.Header.Set("Content-Type", "application/json")
+	req = req.WithContext(context.WithValue(req.Context(), middleware.TenantIDKey, tenantID))
+	rr := httptest.NewRecorder()
+
+	h.Search(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rr.Code, rr.Body.String())
+	}
+	if stub.calls != 0 {
+		t.Errorf("PDL hits=%d, want 0 (a description alone is not a PDL filter)", stub.calls)
+	}
+}
+
 // TestLeadSearch_PDLGatedRecord_ShownWithLocationAndLinkedIn walks the
 // LinkedIn prospecting path end to end. The smoke's PDL plan hides
 // location_name but sends the location parts and the LinkedIn URL. The

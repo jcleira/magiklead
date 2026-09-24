@@ -98,15 +98,14 @@ func (m *Module) Configured() bool { return m != nil && m.apiKey != "" }
 // httptest.Server; production callers should leave the default.
 func (m *Module) SetBaseURL(u string) { m.baseURL = u }
 
-// Filters describes a PDL person-search request. The free-text
-// Description carries over from the onboarding flow's ICP field and
-// is appended to the structured Elasticsearch query.
+// Filters describes a PDL person-search request. There is no
+// free-text field: PDL rejects query_string ("Query clause [query] not
+// allowed"), so the onboarding ICP description cannot reach PDL.
 type Filters struct {
 	Titles      []string
 	Industries  []string
 	CompanySize string
 	Locations   []string
-	Description string
 	Limit       int
 }
 
@@ -771,8 +770,10 @@ type pdlMail struct {
 // every country, which matches nobody. Titles and locations match as
 // phrases, so "united states" does not pull in "united kingdom" rows
 // that the canonical location filter would drop after PDL billed them.
-// PDL rejects the long `match` form ({"query":…,"operator":…}), so
-// match_phrase is the precise form it accepts.
+// PDL rejects every clause whose body carries a `query` key — the long
+// `match` form ({"query":…,"operator":…}) and query_string alike — so
+// match_phrase is the precise form it accepts, and no free-text clause
+// exists.
 func buildESQuery(f Filters) map[string]any {
 	var must []map[string]any
 	if c := anyPhrase("job_title", trimSlice(f.Titles)); c != nil {
@@ -786,9 +787,6 @@ func buildESQuery(f Filters) map[string]any {
 	}
 	if c := anyPhrase("location_name", trimSlice(f.Locations)); c != nil {
 		must = append(must, c)
-	}
-	if d := strings.TrimSpace(f.Description); d != "" {
-		must = append(must, map[string]any{"query_string": map[string]any{"query": d}})
 	}
 	if len(must) == 0 {
 		// PDL requires at least one clause; "exists work_email" is the

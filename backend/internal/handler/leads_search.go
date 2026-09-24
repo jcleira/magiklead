@@ -34,8 +34,10 @@ func NewLeadSearchHandler(q *repository.Queries, pdlModule *pdl.Module) *LeadSea
 
 // leadSearchRequest is the wire shape for POST /api/v1/leads/search.
 // The PDL-specific filters land alongside the existing titles
-// filter; `description` carries the free-text ICP from the
-// onboarding flow.
+// filter. `description` (the free-text ICP the onboarding flow seeds)
+// is still accepted, but nothing filters by it: PDL rejects
+// query_string ("Query clause [query] not allowed"), and the
+// canonical query has no text column to match it against.
 type leadSearchRequest struct {
 	Titles      []string `json:"titles"`
 	WithEmail   bool     `json:"with_email"`
@@ -108,9 +110,11 @@ func (h *LeadSearchHandler) Search(w http.ResponseWriter, r *http.Request) {
 	industries := normalizeTitles(req.Industries)
 	locations := normalizeTitles(req.Locations)
 	companySize := strings.TrimSpace(req.CompanySize)
-	description := strings.TrimSpace(req.Description)
 
-	usesPDLFilters := len(industries) > 0 || companySize != "" || len(locations) > 0 || description != ""
+	// A PDL call needs a filter PDL can apply. The description is not
+	// one (see leadSearchRequest), so a description-only search stays
+	// on the canonical and never pays for an unfiltered PDL query.
+	usesPDLFilters := len(industries) > 0 || companySize != "" || len(locations) > 0
 	pdlCalled := false
 
 	// Canonical-first query. When any PDL-only filter is active we
@@ -137,13 +141,17 @@ func (h *LeadSearchHandler) Search(w http.ResponseWriter, r *http.Request) {
 	// to resolve the actual addresses.
 	noAddresses := req.WithEmail && len(rows) > 0 && len(emailByPerson) == 0
 
-	if (len(rows) == 0 || noAddresses) && usesPDLFilters && h.pdl != nil && h.pdl.Configured() {
+	// Top up from PDL whenever the canonical cannot fill the page. A
+	// single fresh match used to count as a full cache hit, so the first
+	// search for an ICP capped every later one at what it had cached, for
+	// the whole 90-day window. PDL bills per record returned, so a
+	// top-up costs up to `limit` credits.
+	if (len(rows) < int(limit) || noAddresses) && usesPDLFilters && h.pdl != nil && h.pdl.Configured() {
 		if _, err := h.pdl.Search(r.Context(), pdl.Filters{
 			Titles:      titles,
 			Industries:  industries,
 			CompanySize: companySize,
 			Locations:   locations,
-			Description: description,
 			Limit:       int(limit),
 		}); err != nil {
 			if !isRetryableLookupError(err) {

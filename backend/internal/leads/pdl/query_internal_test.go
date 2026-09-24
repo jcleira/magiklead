@@ -16,7 +16,6 @@ func TestBuildESQuery_ValuesInADimensionAreAlternatives(t *testing.T) {
 		Industries:  []string{"E-Commerce", "Retail"},
 		CompanySize: "1-10",
 		Locations:   []string{"United States", "Canada"},
-		Description: "personal brand",
 	})
 	want := map[string]any{"bool": map[string]any{"must": []map[string]any{
 		{"bool": map[string]any{"should": []map[string]any{
@@ -29,7 +28,6 @@ func TestBuildESQuery_ValuesInADimensionAreAlternatives(t *testing.T) {
 			{"match_phrase": map[string]any{"location_name": "United States"}},
 			{"match_phrase": map[string]any{"location_name": "Canada"}},
 		}}},
-		{"query_string": map[string]any{"query": "personal brand"}},
 	}}}
 	assertSameJSON(t, got, want)
 }
