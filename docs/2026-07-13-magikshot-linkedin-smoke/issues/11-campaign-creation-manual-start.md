@@ -51,6 +51,11 @@
   search with titles, industries, locations and size. Live check: the
   law-firm play (Legal Services, United States, 51-200, limit 5)
   returned 5 managing partners, each with a LinkedIn URL.
+- **Blocked at step 2 (found 2026-09-24): no screen adds saved leads to
+  a campaign.** No page calls `POST /api/v1/campaigns/{id}/leads`; only
+  e2e flow 18 does, through the API. The founder also asked for a
+  LinkedIn profile link on every lead. Both are the next task:
+  [HANDOFF.md](../HANDOFF.md).
 
 Warm-up start date: 2026-07-29 (account creation; bound 2026-08-03)
 Warm-up complete confirmed: ______ (founder, against #05's completion
