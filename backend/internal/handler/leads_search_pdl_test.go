@@ -233,6 +233,53 @@ func TestLeadSearch_NoPDLConfigured(t *testing.T) {
 	}
 }
 
+// TestLeadSearch_PDLNoRecords_EmptyNot502: a PDL-backed search that
+// matches nobody is a normal empty list. PDL signals it with 404; the
+// handler used to turn that into 502 pdl_failed, so the leads page showed
+// an error instead of "no results".
+func TestLeadSearch_PDLNoRecords_EmptyNot502(t *testing.T) {
+	pool := withPool(t)
+	tenantID := freshTenant(t, pool)
+
+	stub := newStub(t, http.StatusNotFound,
+		[]byte(`{"status": 404, "error": {"type": "not_found", "message": "No records were found matching your search"}, "total": 0}`))
+	pdlModule := pdl.New(pool, "dev", stub.Client())
+	pdlModule.SetBaseURL(stub.URL)
+
+	h := handler.NewLeadSearchHandler(repository.New(pool), pdlModule)
+
+	suffix := uuid.NewString()[:8]
+	reqBody := mustJSON(t, map[string]any{
+		"titles":    []string{"Content Creator " + suffix, "Executive Coach " + suffix},
+		"locations": []string{"Nowhere-" + suffix, "Elsewhere-" + suffix},
+		"limit":     5,
+	})
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/leads/search",
+		bytes.NewReader(reqBody))
+	req.Header.Set("Content-Type", "application/json")
+	req = req.WithContext(context.WithValue(req.Context(), middleware.TenantIDKey, tenantID))
+	rr := httptest.NewRecorder()
+
+	h.Search(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s, want 200 with an empty list", rr.Code, rr.Body.String())
+	}
+	var resp struct {
+		Count     int  `json:"count"`
+		PDLCalled bool `json:"pdl_called"`
+	}
+	if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("unmarshal: %v body=%s", err, rr.Body.String())
+	}
+	if resp.Count != 0 || !resp.PDLCalled {
+		t.Errorf("count=%d pdl_called=%v, want 0 and true", resp.Count, resp.PDLCalled)
+	}
+	if stub.calls != 1 {
+		t.Errorf("PDL hits=%d, want 1", stub.calls)
+	}
+}
+
 // TestLeadSearch_PDLFallback_OnShadowedEmailless covers the has_email
 // cache-shadow guard. A canonical person that matches the ICP and is
 // flagged has_email=TRUE but has NO actual address (exactly what a

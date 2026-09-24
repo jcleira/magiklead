@@ -237,6 +237,31 @@ func TestSearch_FailurePaths(t *testing.T) {
 	}
 }
 
+// TestSearch_NoRecordsIsEmpty: PDL answers a search that matches nobody
+// with 404 not_found, not an empty 200. That is an empty result, not a
+// failure — the lead-search handler used to surface it as 502 pdl_failed.
+func TestSearch_NoRecordsIsEmpty(t *testing.T) {
+	pool := withPool(t)
+	stub := newStub(t, http.StatusNotFound,
+		[]byte(`{"status": 404, "error": {"type": "not_found", "message": "No records were found matching your search"}, "total": 0}`))
+	m := pdl.New(pool, "dev", stub.Client())
+	m.SetBaseURL(stub.URL)
+
+	got, err := m.Search(context.Background(), pdl.Filters{
+		Titles:    []string{"Content Creator", "Executive Coach"},
+		Locations: []string{"Canada", "Australia"},
+	})
+	if err != nil {
+		t.Fatalf("err=%v, want nil (no records is an empty result)", err)
+	}
+	if len(got) != 0 {
+		t.Errorf("persons=%d, want 0", len(got))
+	}
+	if stub.calls != 1 {
+		t.Errorf("PDL hits=%d, want 1", stub.calls)
+	}
+}
+
 func TestSearch_NotConfigured(t *testing.T) {
 	pool := withPool(t)
 	m := pdl.New(pool, "", nil)

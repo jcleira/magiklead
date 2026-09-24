@@ -186,6 +186,12 @@ func (m *Module) Search(ctx context.Context, f Filters) ([]Person, error) {
 	defer resp.Body.Close()
 
 	raw, _ := io.ReadAll(resp.Body)
+	// PDL answers a search that matches nobody with 404 not_found
+	// ("No records were found matching your search"), not an empty 200.
+	// That is an empty result, not a failure.
+	if resp.StatusCode == http.StatusNotFound {
+		return nil, nil
+	}
 	if err := mapStatus(resp.StatusCode, raw); err != nil {
 		return nil, err
 	}
@@ -679,25 +685,30 @@ type pdlMail struct {
 // accepts either a structured `query` object or a free-text `query`
 // string; we always send the bool form so the wire shape is stable
 // across requests.
+//
+// Every dimension is one `must` clause, and the values inside a
+// dimension are alternatives — "Content Creator, Executive Coach" or
+// "United States, Canada" means either, as the canonical query reads
+// them (SearchPersons ORs titles, industries and locations). One clause
+// per value would demand a person hold every title at once and live in
+// every country, which matches nobody. Titles and locations match as
+// phrases, so "united states" does not pull in "united kingdom" rows
+// that the canonical location filter would drop after PDL billed them.
+// PDL rejects the long `match` form ({"query":…,"operator":…}), so
+// match_phrase is the precise form it accepts.
 func buildESQuery(f Filters) map[string]any {
 	var must []map[string]any
-	for _, t := range f.Titles {
-		if t = strings.TrimSpace(t); t != "" {
-			must = append(must, map[string]any{"match": map[string]any{"job_title": t}})
-		}
+	if c := anyPhrase("job_title", trimSlice(f.Titles)); c != nil {
+		must = append(must, c)
 	}
-	for _, ind := range f.Industries {
-		if ind = strings.TrimSpace(ind); ind != "" {
-			must = append(must, map[string]any{"term": map[string]any{"job_company_industry": strings.ToLower(ind)}})
-		}
+	if inds := lowerSlice(f.Industries); len(inds) > 0 {
+		must = append(must, map[string]any{"terms": map[string]any{"job_company_industry": inds}})
 	}
 	if cs := strings.TrimSpace(f.CompanySize); cs != "" {
 		must = append(must, map[string]any{"term": map[string]any{"job_company_size": cs}})
 	}
-	for _, loc := range f.Locations {
-		if loc = strings.TrimSpace(loc); loc != "" {
-			must = append(must, map[string]any{"match": map[string]any{"location_name": loc}})
-		}
+	if c := anyPhrase("location_name", trimSlice(f.Locations)); c != nil {
+		must = append(must, c)
 	}
 	if d := strings.TrimSpace(f.Description); d != "" {
 		must = append(must, map[string]any{"query_string": map[string]any{"query": d}})
@@ -708,6 +719,20 @@ func buildESQuery(f Filters) map[string]any {
 		must = append(must, map[string]any{"exists": map[string]any{"field": "work_email"}})
 	}
 	return map[string]any{"bool": map[string]any{"must": must}}
+}
+
+// anyPhrase matches field against any one of values. A bool with only
+// `should` clauses requires at least one of them to match. Returns nil
+// for no values so the dimension adds no clause.
+func anyPhrase(field string, values []string) map[string]any {
+	if len(values) == 0 {
+		return nil
+	}
+	should := make([]map[string]any, 0, len(values))
+	for _, v := range values {
+		should = append(should, map[string]any{"match_phrase": map[string]any{field: v}})
+	}
+	return map[string]any{"bool": map[string]any{"should": should}}
 }
 
 func searchSize(n int) int {
