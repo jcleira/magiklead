@@ -22,6 +22,74 @@ wired. A latent #03 bug (create-webhook parsed `id`, not the real
 bug (the notify_url callback is header-less; fixed `9db4491`) and
 completed 2026-08-03 — account `active`. **Ceremony done.**
 
+**Status change, found 2026-09-22: the account went `restricted`
+(`CREDENTIALS`) less than 16 hours after the bind.** The "account
+`active`" above was true only at bind time. Evidence: the nightly
+dumps in `~/.local/share/magiklead-smoke/dumps/`, read with
+`pg_restore` in a temporary `postgres:17-alpine` container.
+
+| Dump (CEST) | `linkedin_accounts` |
+|---|---|
+| 2026-08-03 08:52 | no row (before the bind) |
+| 2026-08-04 03:17 | `restricted`, `last_error` = `CREDENTIALS` |
+| 2026-08-05 → 2026-08-17 (12 dumps) | the same |
+
+The 2026-08-04 row: id `e7715755…`, tenant `be594ede…`,
+`unipile_account_id` `v0DboRWMTQiYVSLUNZbmNg`, `created_at`
+2026-08-03 09:27:57Z, `warmup_started_at` NULL, all counters 0. So the
+change came between 09:27Z and 01:17Z the next day. All 14 dumps have
+zero LinkedIn campaigns and zero `linkedin_events`.
+
+- **Source: Unipile, not our code.** `last_error` holds the raw
+  provider status, and only `handleAccountStatus` writes that value.
+  That handler serves the registered `account_status` webhook, which
+  must send the `Unipile-Auth` header
+  (`backend/internal/handler/unipile.go`). The worker path
+  (`escalateRestriction`) writes `unipile: account restricted`, and
+  only after a send. There were no sends. Thus Unipile reported that
+  the LinkedIn session needs a new login.
+- **First live restriction event.**
+  [Spike finding E](../../2026-06-25-finish-unipile-integration/spike-captures.md)
+  expected that we cannot make these events on demand. The detection
+  path (webhook → `mapUnipileStatus` → `restricted` + reason) worked
+  on real traffic. The raw bytes are lost: Docker replaced the api
+  container on 2026-08-11, so the log lines from 2026-08-03/04 are
+  gone.
+- **Cause: unknown.** The docs record no cause. #11 step 0 checks the
+  runbook §7 *Clean standing* box against these dates.
+- **This note is the durable record.** The first good nightly dump
+  after the pod runs again deletes all dumps older than 14 days
+  (`devpod/smoke/dump.sh`). That removes every dump in the table.
+- **Next:** reconnect before any send —
+  [#11 step 0](./11-campaign-creation-manual-start.md).
+
+**Status change 2026-09-23/24: relinked in a new Unipile workspace,
+bound by a DB insert.** The Unipile subscription lapsed. The founder
+paid again and relinked the same LinkedIn account
+(`jose-corral-084bb6425`) in the Unipile dashboard on 2026-09-23
+14:27Z.
+
+- **New workspace.** The renewal came with a new DSN
+  (`https://api67.unipile.com:19786`) and a new API key, both now in
+  `.env.backend`. The old key returned 401 at its DSN
+  (`api59.unipile.com:18900`). The old account `v0DboRWMTQiYVSLUNZbmNg`
+  is gone. The new one is `_gtbOQ8dQ3aYT3bsPKptJA`, source status `OK`.
+  The three `magiklead-smoke-*` webhooks were already registered in the
+  new workspace, at the tunnel.
+- **Bind (founder decision).** A dashboard link sends no signed
+  `account.connected` callback, so the app did not know the account.
+  On 2026-09-24 one transaction deleted the stale `v0Dbo…` row and ran
+  the `UpsertLinkedInAccount` statement for the new id: row
+  `e576cdf6…`, `active`, `last_error` NULL. The founder chose this over
+  a second LinkedIn login through Settings, because the last login was
+  restricted within 16 hours. `GET /api/v1/linkedin/auth-url` returns
+  200 again, so Settings → **Reconnect** works.
+- **Still open:** no real `account.connected` callback has reached the
+  app. The 2026-08-03 bind was a replay, and this one is a DB insert.
+- **Dumps.** The August dumps in the table above are archived at
+  `~/.local/share/magiklead-smoke/dumps-archive-2026-08/`
+  (sha256-checked). The 2026-09-24 nightly dump pruned the originals.
+
 ## What to build
 
 Nothing new — this slice **executes** the runbook's day-0 checklist

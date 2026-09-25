@@ -109,24 +109,31 @@ WHERE
             SELECT 1 FROM emails em
             WHERE em.person_id = p.id AND em.verified_at IS NOT NULL
         ))
-    AND ($3::text[] IS NULL OR o.industries && $3::text[])
-    AND ($4::text IS NULL OR o.size_range = $4::text)
-    AND ($5::text[] IS NULL OR EXISTS (
+    -- with_linkedin keeps only people the LinkedIn rail can invite: the
+    -- linkedin_url identifier is the address of every invite.
+    AND (NOT $3::boolean OR EXISTS (
+            SELECT 1 FROM person_identifiers pi
+            WHERE pi.person_id = p.id AND pi.identifier_type = 'linkedin_url'
+        ))
+    AND ($4::text[] IS NULL OR o.industries && $4::text[])
+    AND ($5::text IS NULL OR o.size_range = $5::text)
+    AND ($6::text[] IS NULL OR EXISTS (
         SELECT 1
-        FROM unnest($5::text[]) AS loc
+        FROM unnest($6::text[]) AS loc
         WHERE p.location ILIKE '%' || loc || '%'
     ))
-    AND (NOT $6::boolean
+    AND (NOT $7::boolean
          OR p.updated_at > NOW() - INTERVAL '90 days')
 ORDER BY title_score DESC NULLS LAST,
          p.canonical_name ASC,
          p.id ASC
-LIMIT $8 OFFSET $7
+LIMIT $9 OFFSET $8
 `
 
 type SearchPersonsParams struct {
 	Titles       []string    `json:"titles"`
 	WithEmail    bool        `json:"with_email"`
+	WithLinkedin bool        `json:"with_linkedin"`
 	Industries   []string    `json:"industries"`
 	CompanySize  pgtype.Text `json:"company_size"`
 	Locations    []string    `json:"locations"`
@@ -175,6 +182,7 @@ func (q *Queries) SearchPersons(ctx context.Context, arg SearchPersonsParams) ([
 	rows, err := q.db.Query(ctx, searchPersons,
 		arg.Titles,
 		arg.WithEmail,
+		arg.WithLinkedin,
 		arg.Industries,
 		arg.CompanySize,
 		arg.Locations,

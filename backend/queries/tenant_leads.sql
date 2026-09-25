@@ -32,12 +32,36 @@ WHERE tenant_id = $1 AND person_id = $2;
 
 -- ListTenantLeads returns this tenant's saved leads with the canonical
 -- person attached, newest-first. Filter by status with `sqlc.narg`:
--- pass NULL to list all statuses.
+-- pass NULL to list all statuses. Title and company come from the
+-- current job, and linkedin_url from the person's identifier — the URL
+-- the LinkedIn rail invites. '' means none.
 -- name: ListTenantLeads :many
+WITH current_emp AS (
+    SELECT DISTINCT ON (emp.person_id)
+        emp.person_id,
+        emp.title,
+        emp.organization_id
+    FROM employments emp
+    WHERE emp.is_current = TRUE
+    ORDER BY emp.person_id, emp.start_date DESC NULLS LAST
+), li AS (
+    SELECT DISTINCT ON (pi.person_id)
+        pi.person_id,
+        pi.identifier_value AS linkedin_url
+    FROM person_identifiers pi
+    WHERE pi.identifier_type = 'linkedin_url'
+    ORDER BY pi.person_id
+)
 SELECT tl.tenant_id, tl.person_id, tl.status, tl.notes, tl.added_at, tl.added_by_user_id,
-       p.canonical_name, p.first_name, p.last_name
+       p.canonical_name, p.first_name, p.last_name,
+       COALESCE(ce.title, '')::text         AS title,
+       COALESCE(o.canonical_name, '')::text AS company,
+       COALESCE(li.linkedin_url, '')::text  AS linkedin_url
 FROM tenant_leads tl
 JOIN persons p ON p.id = tl.person_id
+LEFT JOIN current_emp   ce ON ce.person_id = tl.person_id
+LEFT JOIN organizations o  ON o.id = ce.organization_id
+LEFT JOIN li               ON li.person_id = tl.person_id
 WHERE tl.tenant_id = $1
   AND (sqlc.narg('status')::text IS NULL OR tl.status = sqlc.narg('status')::text)
 ORDER BY tl.added_at DESC

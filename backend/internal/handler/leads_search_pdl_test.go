@@ -233,6 +233,224 @@ func TestLeadSearch_NoPDLConfigured(t *testing.T) {
 	}
 }
 
+// TestLeadSearch_PDLNoRecords_EmptyNot502: a PDL-backed search that
+// matches nobody is a normal empty list. PDL signals it with 404; the
+// handler used to turn that into 502 pdl_failed, so the leads page showed
+// an error instead of "no results".
+func TestLeadSearch_PDLNoRecords_EmptyNot502(t *testing.T) {
+	pool := withPool(t)
+	tenantID := freshTenant(t, pool)
+
+	stub := newStub(t, http.StatusNotFound,
+		[]byte(`{"status": 404, "error": {"type": "not_found", "message": "No records were found matching your search"}, "total": 0}`))
+	pdlModule := pdl.New(pool, "dev", stub.Client())
+	pdlModule.SetBaseURL(stub.URL)
+
+	h := handler.NewLeadSearchHandler(repository.New(pool), pdlModule)
+
+	suffix := uuid.NewString()[:8]
+	reqBody := mustJSON(t, map[string]any{
+		"titles":    []string{"Content Creator " + suffix, "Executive Coach " + suffix},
+		"locations": []string{"Nowhere-" + suffix, "Elsewhere-" + suffix},
+		"limit":     5,
+	})
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/leads/search",
+		bytes.NewReader(reqBody))
+	req.Header.Set("Content-Type", "application/json")
+	req = req.WithContext(context.WithValue(req.Context(), middleware.TenantIDKey, tenantID))
+	rr := httptest.NewRecorder()
+
+	h.Search(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s, want 200 with an empty list", rr.Code, rr.Body.String())
+	}
+	var resp struct {
+		Count     int  `json:"count"`
+		PDLCalled bool `json:"pdl_called"`
+	}
+	if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("unmarshal: %v body=%s", err, rr.Body.String())
+	}
+	if resp.Count != 0 || !resp.PDLCalled {
+		t.Errorf("count=%d pdl_called=%v, want 0 and true", resp.Count, resp.PDLCalled)
+	}
+	if stub.calls != 1 {
+		t.Errorf("PDL hits=%d, want 1", stub.calls)
+	}
+}
+
+// TestLeadSearch_PDLTopsUpPartialPage: one fresh canonical match used to
+// count as a full cache hit, so the first search for an ICP capped every
+// later one at what it had cached. On the smoke pod, three people from a
+// limit-3 check held the play #1 search at 3 results. Now a page the
+// canonical cannot fill is topped up from PDL.
+func TestLeadSearch_PDLTopsUpPartialPage(t *testing.T) {
+	pool := withPool(t)
+	tenantID := freshTenant(t, pool)
+	suffix := "-" + uuid.NewString()[:8]
+	industry := "topup-industry" + suffix
+
+	record := func(id, name string) map[string]any {
+		return map[string]any{
+			"id":                   "pdl-" + id + suffix,
+			"full_name":            name + suffix,
+			"job_title":            "consultant",
+			"job_company_name":     name + " Co",
+			"job_company_website":  id + "-" + strings.TrimPrefix(suffix, "-") + ".test",
+			"job_company_industry": industry,
+			"location_country":     "canada",
+		}
+	}
+	search := func(records ...map[string]any) (count int, pdlCalled bool, hits int) {
+		t.Helper()
+		stub := newStub(t, 200, mustJSON(t, map[string]any{"status": 200, "data": records}))
+		pdlModule := pdl.New(pool, "dev", stub.Client())
+		pdlModule.SetBaseURL(stub.URL)
+		h := handler.NewLeadSearchHandler(repository.New(pool), pdlModule)
+
+		req := httptest.NewRequest(http.MethodPost, "/api/v1/leads/search",
+			bytes.NewReader(mustJSON(t, map[string]any{"industries": []string{industry}, "limit": 5})))
+		req.Header.Set("Content-Type", "application/json")
+		req = req.WithContext(context.WithValue(req.Context(), middleware.TenantIDKey, tenantID))
+		rr := httptest.NewRecorder()
+		h.Search(rr, req)
+		if rr.Code != http.StatusOK {
+			t.Fatalf("status=%d body=%s", rr.Code, rr.Body.String())
+		}
+		var resp struct {
+			Count     int  `json:"count"`
+			PDLCalled bool `json:"pdl_called"`
+		}
+		if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
+			t.Fatalf("unmarshal: %v body=%s", err, rr.Body.String())
+		}
+		return resp.Count, resp.PDLCalled, stub.calls
+	}
+
+	// First search: the canonical is empty, and PDL returns one person.
+	if count, called, _ := search(record("one", "first person")); count != 1 || !called {
+		t.Fatalf("first search count=%d pdl_called=%v, want 1 and true", count, called)
+	}
+	// Second search: the canonical holds one fresh match — a partial
+	// page — so PDL is asked again, and its new people fill the page.
+	count, called, hits := search(record("one", "first person"), record("two", "second person"), record("three", "third person"))
+	if !called || hits != 1 {
+		t.Fatalf("second search pdl_called=%v PDL hits=%d, want one top-up call", called, hits)
+	}
+	if count != 3 {
+		t.Errorf("second search count=%d, want 3 (1 cached + 2 new)", count)
+	}
+}
+
+// TestLeadSearch_DescriptionAlone_NeverCallsPDL: PDL rejects
+// query_string, so the onboarding description cannot narrow a PDL
+// search. A search with only a description stays on the canonical even
+// when the page is not full; otherwise the top-up would pay for an
+// unfiltered PDL query.
+func TestLeadSearch_DescriptionAlone_NeverCallsPDL(t *testing.T) {
+	pool := withPool(t)
+	tenantID := freshTenant(t, pool)
+
+	stub := newStub(t, 200, []byte(`{"status":200,"data":[]}`))
+	pdlModule := pdl.New(pool, "dev", stub.Client())
+	pdlModule.SetBaseURL(stub.URL)
+	h := handler.NewLeadSearchHandler(repository.New(pool), pdlModule)
+
+	reqBody := mustJSON(t, map[string]any{
+		"description": "Managing Partner / Tax Partner at Accounting, 15-300",
+		"limit":       200,
+	})
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/leads/search",
+		bytes.NewReader(reqBody))
+	req.Header.Set("Content-Type", "application/json")
+	req = req.WithContext(context.WithValue(req.Context(), middleware.TenantIDKey, tenantID))
+	rr := httptest.NewRecorder()
+
+	h.Search(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rr.Code, rr.Body.String())
+	}
+	if stub.calls != 0 {
+		t.Errorf("PDL hits=%d, want 0 (a description alone is not a PDL filter)", stub.calls)
+	}
+}
+
+// TestLeadSearch_PDLGatedRecord_ShownWithLocationAndLinkedIn walks the
+// LinkedIn prospecting path end to end. The smoke's PDL plan hides
+// location_name but sends the location parts and the LinkedIn URL. The
+// person used to land with a NULL location, so the canonical re-query
+// behind any location filter dropped them, and with no linkedin_url the
+// LinkedIn rail could never invite them. Now the search returns them,
+// placed and with a profile link.
+func TestLeadSearch_PDLGatedRecord_ShownWithLocationAndLinkedIn(t *testing.T) {
+	pool := withPool(t)
+	tenantID := freshTenant(t, pool)
+	suffix := "-" + uuid.NewString()[:8]
+
+	body := mustJSON(t, map[string]any{
+		"status": 200,
+		"data": []map[string]any{{
+			"id":                  "pdl-gated" + suffix,
+			"full_name":           "casey creator" + suffix,
+			"first_name":          "casey",
+			"last_name":           "creator",
+			"job_title":           "content creator" + suffix,
+			"job_company_name":    "Creator Co",
+			"job_company_website": "creatorco-" + strings.TrimPrefix(suffix, "-") + ".test",
+			"job_company_size":    "1-10",
+			"location_name":       true,
+			"location_country":    "utopia" + suffix,
+			"linkedin_url":        "linkedin.com/in/casey-creator" + suffix,
+			"work_email":          true,
+		}},
+	})
+	stub := newStub(t, 200, body)
+	pdlModule := pdl.New(pool, "dev", stub.Client())
+	pdlModule.SetBaseURL(stub.URL)
+
+	h := handler.NewLeadSearchHandler(repository.New(pool), pdlModule)
+
+	reqBody := mustJSON(t, map[string]any{
+		"titles":    []string{"Content Creator" + suffix},
+		"locations": []string{"Utopia" + suffix},
+		"limit":     5,
+	})
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/leads/search",
+		bytes.NewReader(reqBody))
+	req.Header.Set("Content-Type", "application/json")
+	req = req.WithContext(context.WithValue(req.Context(), middleware.TenantIDKey, tenantID))
+	rr := httptest.NewRecorder()
+
+	h.Search(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rr.Code, rr.Body.String())
+	}
+	var resp struct {
+		Results []struct {
+			Location    string `json:"location"`
+			LinkedInURL string `json:"linkedin_url"`
+		} `json:"results"`
+		Count     int  `json:"count"`
+		PDLCalled bool `json:"pdl_called"`
+	}
+	if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("unmarshal: %v body=%s", err, rr.Body.String())
+	}
+	if !resp.PDLCalled || resp.Count != 1 {
+		t.Fatalf("pdl_called=%v count=%d, want true and 1 (the location filter must keep the PDL person)", resp.PDLCalled, resp.Count)
+	}
+	r := resp.Results[0]
+	if r.Location != "utopia"+suffix {
+		t.Errorf("location=%q, want %q", r.Location, "utopia"+suffix)
+	}
+	if want := "https://www.linkedin.com/in/casey-creator" + suffix; r.LinkedInURL != want {
+		t.Errorf("linkedin_url=%q, want %q", r.LinkedInURL, want)
+	}
+}
+
 // TestLeadSearch_PDLFallback_OnShadowedEmailless covers the has_email
 // cache-shadow guard. A canonical person that matches the ICP and is
 // flagged has_email=TRUE but has NO actual address (exactly what a

@@ -200,6 +200,15 @@ type LinkedinEvent struct {
 	CreatedAt        pgtype.Timestamptz `json:"created_at"`
 }
 
+type LinkedinSearch struct {
+	ID                pgtype.UUID        `json:"id"`
+	TenantID          pgtype.UUID        `json:"tenant_id"`
+	LinkedinAccountID pgtype.UUID        `json:"linkedin_account_id"`
+	Filters           []byte             `json:"filters"`
+	ResultCount       int32              `json:"result_count"`
+	CreatedAt         pgtype.Timestamptz `json:"created_at"`
+}
+
 type LinkedinTask struct {
 	ID             pgtype.UUID        `json:"id"`
 	CampaignLeadID pgtype.UUID        `json:"campaign_lead_id"`

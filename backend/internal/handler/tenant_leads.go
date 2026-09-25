@@ -46,6 +46,11 @@ type tenantLeadResponse struct {
 	Name      string  `json:"name,omitempty"`
 	FirstName *string `json:"first_name,omitempty"`
 	LastName  *string `json:"last_name,omitempty"`
+	Title     string  `json:"title,omitempty"`
+	Company   string  `json:"company,omitempty"`
+	// LinkedInURL is the profile the LinkedIn rail invites. A saved lead
+	// without one cannot join a LinkedIn campaign (AddLeads skips it).
+	LinkedInURL string `json:"linkedin_url,omitempty"`
 }
 
 type tenantLeadListResponse struct {
@@ -271,10 +276,13 @@ func toTenantLeadFromAddRow(tl repository.AddTenantLeadRow) tenantLeadResponse {
 
 func toTenantLeadFromListRow(tl repository.ListTenantLeadsRow) tenantLeadResponse {
 	out := tenantLeadResponse{
-		PersonID: fmtUUID(tl.PersonID),
-		Status:   tl.Status,
-		AddedAt:  tl.AddedAt.Time.Format("2006-01-02T15:04:05Z07:00"),
-		Name:     tl.CanonicalName,
+		PersonID:    fmtUUID(tl.PersonID),
+		Status:      tl.Status,
+		AddedAt:     tl.AddedAt.Time.Format("2006-01-02T15:04:05Z07:00"),
+		Name:        tl.CanonicalName,
+		Title:       tl.Title,
+		Company:     tl.Company,
+		LinkedInURL: tl.LinkedinUrl,
 	}
 	if tl.Notes.Valid {
 		v := tl.Notes.String

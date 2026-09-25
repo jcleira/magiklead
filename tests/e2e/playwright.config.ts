@@ -12,6 +12,8 @@ if (existsSync(localEnv)) loadEnv({ path: localEnv, override: true });
 
 export default defineConfig({
   testDir: './tests',
+  // Fetches the Clerk testing token the UI flows sign in with.
+  globalSetup: './global-setup.ts',
   timeout: 90_000,
   expect: { timeout: 10_000 },
   fullyParallel: false,

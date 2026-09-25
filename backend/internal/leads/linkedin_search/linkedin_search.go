@@ -5,13 +5,13 @@
 // NO email: LinkedIn profiles carry no address, so the emails table is
 // never touched and persons.has_email stays false.
 //
-// Production feeds this write-through from a RapidAPI LinkedIn
-// people-search (default rockapis `linkedin-data-api`, behind a Doer
-// seam); local dev gets its prospects from the seed loader (cmd/seed),
-// which plants synthetic LinkedIn profiles through the same canonical
-// path. The RapidAPI wire shape below is provisional; confirm it
-// against the live endpoint when a real key is wired (only fetch/parse
-// change — the write-through is source-agnostic).
+// Production feeds this write-through from a Sales Navigator people
+// search run through the tenant's connected LinkedIn account
+// (handler.LinkedInSearchHandler, via Unipile). The RapidAPI
+// people-search below (rockapis `linkedin-data-api`, behind a Doer seam)
+// was the first plan's source and is not wired; its wire shape is
+// provisional. Local dev gets its prospects from the seed loader
+// (cmd/seed).
 //
 // Per docs/2026-06-09-linkedin-only-outreach/issues/02-source-linkedin-prospects.md.
 package linkedinsearch
@@ -103,8 +103,8 @@ type Filters struct {
 	Limit     int
 }
 
-// Profile is the source-agnostic input to WriteThrough — what both the
-// RapidAPI path and the demo scraper produce.
+// Profile is the source-agnostic input to WriteThrough — what a LinkedIn
+// people search, the RapidAPI path and the demo scraper produce.
 type Profile struct {
 	FullName    string
 	FirstName   string
@@ -112,9 +112,17 @@ type Profile struct {
 	Title       string
 	CompanyName string
 	Domain      string
-	LinkedInURL string
-	Location    string
+	// CompanyLinkedInID is LinkedIn's numeric company id when the source
+	// gives one. It keys the organization the way the ingest does
+	// (identifier "linkedin", value "linkedin.com/company/<id>").
+	CompanyLinkedInID string
+	LinkedInURL       string
+	Location          string
 }
+
+// CompanyIdentifierType keys an organization by its LinkedIn company
+// page, in the scheme-less form the ingest writes.
+const CompanyIdentifierType = "linkedin"
 
 // Person is the post-write-through canonical view returned by Search /
 // WriteThrough. IDs reference rows now present in persons / organizations.
@@ -145,9 +153,12 @@ func (m *Module) Search(ctx context.Context, f Filters) ([]Person, error) {
 }
 
 // WriteThrough lands profiles in the canonical: organization (by
-// primary_domain) → person (deduped by the linkedin_url identifier) →
-// linkedin_url identifier → current employment. It writes no email.
-// Profiles without a LinkedIn URL are skipped (the URL is the dedup key).
+// LinkedIn company id, then primary_domain, then the person's current
+// company of the same name) → person (deduped by the linkedin_url
+// identifier) → linkedin_url identifier → current employment. It writes
+// no email. Profiles without a LinkedIn URL are skipped (the URL is the
+// dedup key). A profile written again updates in place: one person, one
+// organization, one current job.
 func (m *Module) WriteThrough(ctx context.Context, profiles []Profile) ([]Person, error) {
 	out := make([]Person, 0, len(profiles))
 	for _, p := range profiles {
@@ -171,11 +182,21 @@ func (m *Module) writeOne(ctx context.Context, p Profile) (Person, error) {
 		return Person{}, errors.New("linkedinsearch: profile has no linkedin_url")
 	}
 
-	org, err := m.upsertOrganization(ctx, p)
+	// The person already stored for this profile, if any: its current
+	// company is reused when the name matches.
+	known, err := m.q.FindPersonByIdentifier(ctx, repository.FindPersonByIdentifierParams{
+		IdentifierType:  IdentifierType,
+		IdentifierValue: linkedinURL,
+	})
+	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+		return Person{}, fmt.Errorf("linkedinsearch: lookup person: %w", err)
+	}
+
+	org, err := m.upsertOrganization(ctx, p, known.ID)
 	if err != nil {
 		return Person{}, err
 	}
-	person, isNew, err := m.upsertPerson(ctx, p, linkedinURL)
+	person, isNew, err := m.upsertPerson(ctx, p, known)
 	if err != nil {
 		return Person{}, err
 	}
@@ -216,48 +237,103 @@ func (m *Module) writeOne(ctx context.Context, p Profile) (Person, error) {
 	return out, nil
 }
 
-func (m *Module) upsertOrganization(ctx context.Context, p Profile) (repository.Organization, error) {
+// upsertOrganization finds the profile's company or creates it. The
+// lookup order is the LinkedIn company id, the domain, and then — for a
+// person already stored (knownPersonID valid) — their current company
+// with the same name, since LinkedIn search results carry no domain. A
+// new organization is keyed by the company id when there is one.
+func (m *Module) upsertOrganization(ctx context.Context, p Profile, knownPersonID pgtype.UUID) (repository.Organization, error) {
 	domain := strings.ToLower(strings.TrimSpace(p.Domain))
 	name := strings.TrimSpace(p.CompanyName)
 	if name == "" && domain == "" {
 		name = "Unknown"
 	}
 
+	companyKey := ""
+	if id := strings.TrimSpace(p.CompanyLinkedInID); id != "" {
+		companyKey = "linkedin.com/company/" + strings.ToLower(id)
+		org, err := m.q.FindOrganizationByIdentifier(ctx, repository.FindOrganizationByIdentifierParams{
+			IdentifierType:  CompanyIdentifierType,
+			IdentifierValue: companyKey,
+		})
+		if err == nil {
+			return org, nil
+		}
+		if !errors.Is(err, pgx.ErrNoRows) {
+			return repository.Organization{}, fmt.Errorf("linkedinsearch: lookup org by linkedin id: %w", err)
+		}
+	}
+
+	if domain == "" && knownPersonID.Valid {
+		org, err := m.q.FindCurrentOrganizationByName(ctx, repository.FindCurrentOrganizationByNameParams{
+			PersonID: knownPersonID,
+			Name:     name,
+		})
+		if err == nil {
+			return org, m.linkCompany(ctx, org.ID, companyKey)
+		}
+		if !errors.Is(err, pgx.ErrNoRows) {
+			return repository.Organization{}, fmt.Errorf("linkedinsearch: lookup current org by name: %w", err)
+		}
+	}
+
 	if domain != "" {
 		existing, err := m.q.FindOrganizationByPrimaryDomain(ctx, pgText(domain))
 		if err == nil {
-			return m.q.UpdateOrganizationFromPDL(ctx, repository.UpdateOrganizationFromPDLParams{
+			org, err := m.q.UpdateOrganizationFromPDL(ctx, repository.UpdateOrganizationFromPDLParams{
 				ID:            existing.ID,
 				CanonicalName: name,
 				Industries:    nil, // LinkedIn search carries no industry
 				SizeRange:     pgtype.Text{},
 			})
+			if err != nil {
+				return repository.Organization{}, err
+			}
+			return org, m.linkCompany(ctx, org.ID, companyKey)
 		}
 		if !errors.Is(err, pgx.ErrNoRows) {
 			return repository.Organization{}, fmt.Errorf("linkedinsearch: lookup org by domain: %w", err)
 		}
 	}
 
-	return m.q.CreateOrganizationFromPDL(ctx, repository.CreateOrganizationFromPDLParams{
+	org, err := m.q.CreateOrganizationFromPDL(ctx, repository.CreateOrganizationFromPDLParams{
 		CanonicalName: name,
 		PrimaryDomain: pgText(domain),
 		Industries:    nil,
 		SizeRange:     pgtype.Text{},
 	})
+	if err != nil {
+		return repository.Organization{}, err
+	}
+	return org, m.linkCompany(ctx, org.ID, companyKey)
 }
 
-// upsertPerson dedups on the linkedin_url identifier and returns whether
-// the person was newly inserted (the caller writes the identifier only
-// on inserts). has_email is never set true on this path.
-func (m *Module) upsertPerson(ctx context.Context, p Profile, linkedinURL string) (repository.Person, bool, error) {
+// linkCompany keys an organization by its LinkedIn company page. A key
+// that another organization already holds stays where it is.
+func (m *Module) linkCompany(ctx context.Context, orgID pgtype.UUID, companyKey string) error {
+	if companyKey == "" {
+		return nil
+	}
+	if _, err := m.q.LinkOrganizationIdentifierIfAbsent(ctx, repository.LinkOrganizationIdentifierIfAbsentParams{
+		OrganizationID:  orgID,
+		IdentifierType:  CompanyIdentifierType,
+		IdentifierValue: companyKey,
+		IsPrimary:       pgtype.Bool{Bool: false, Valid: true},
+	}); err != nil {
+		return fmt.Errorf("linkedinsearch: link company: %w", err)
+	}
+	return nil
+}
+
+// upsertPerson refreshes the person already stored for the profile
+// (known, found by its linkedin_url identifier) or creates one, and
+// returns whether the person was newly inserted (the caller writes the
+// identifier only on inserts). has_email is never set true on this path.
+func (m *Module) upsertPerson(ctx context.Context, p Profile, known repository.Person) (repository.Person, bool, error) {
 	fullName := profileName(p)
-	existing, err := m.q.FindPersonByIdentifier(ctx, repository.FindPersonByIdentifierParams{
-		IdentifierType:  IdentifierType,
-		IdentifierValue: linkedinURL,
-	})
-	if err == nil {
+	if known.ID.Valid {
 		updated, err := m.q.UpdatePersonFromPDL(ctx, repository.UpdatePersonFromPDLParams{
-			ID:             existing.ID,
+			ID:             known.ID,
 			CanonicalName:  fullName,
 			FirstName:      pgText(p.FirstName),
 			LastName:       pgText(p.LastName),
@@ -266,9 +342,6 @@ func (m *Module) upsertPerson(ctx context.Context, p Profile, linkedinURL string
 			HasEmail:       false,
 		})
 		return updated, false, err
-	}
-	if !errors.Is(err, pgx.ErrNoRows) {
-		return repository.Person{}, false, fmt.Errorf("linkedinsearch: lookup person: %w", err)
 	}
 
 	created, err := m.q.CreatePersonFromPDL(ctx, repository.CreatePersonFromPDLParams{

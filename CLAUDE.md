@@ -151,7 +151,12 @@ bakes the same data into the local snapshot.
   (docs/2026-06-09-linkedin-only-outreach). Absent in dev: the LinkedIn
   connect/send routes degrade like PDL — `GET /linkedin/auth-url`
   returns 503 `linkedin_disabled` instead of crashing. A dev dummy value
-  is enough to exercise the connect gate + webhook locally
+  is enough to exercise the connect gate + webhook locally. It also
+  runs the LinkedIn lead search (`POST /api/v1/leads/linkedin-search`,
+  a Sales Navigator people search as the connected account, 250
+  profiles per account per 24 h): the account needs Sales Navigator,
+  because a classic search from a small free account returns everyone
+  outside its network as "LinkedIn Member"
 - `UNIPILE_DSN` (optional) — the Unipile instance base URL for this
   deployment (e.g. `https://api55.unipile.com:18524`). Used as the
   base for all Unipile REST calls (hosted-auth, resolve, send,

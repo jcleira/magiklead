@@ -39,7 +39,7 @@ func (q *Queries) AddLeadToCampaign(ctx context.Context, arg AddLeadToCampaignPa
 	return err
 }
 
-const addPersonToCampaign = `-- name: AddPersonToCampaign :exec
+const addPersonToCampaign = `-- name: AddPersonToCampaign :execrows
 INSERT INTO campaign_leads (campaign_id, person_id, status)
 VALUES ($1, $2, 'queued')
 ON CONFLICT DO NOTHING
@@ -50,10 +50,16 @@ type AddPersonToCampaignParams struct {
 	PersonID   pgtype.UUID `json:"person_id"`
 }
 
-// New canonical path — add a saved person to a campaign.
-func (q *Queries) AddPersonToCampaign(ctx context.Context, arg AddPersonToCampaignParams) error {
-	_, err := q.db.Exec(ctx, addPersonToCampaign, arg.CampaignID, arg.PersonID)
-	return err
+// New canonical path — add a saved person to a campaign. Returns the
+// rows inserted: 0 when the person is already in the campaign (the
+// partial unique index on (campaign_id, person_id)), so the caller
+// counts only real additions.
+func (q *Queries) AddPersonToCampaign(ctx context.Context, arg AddPersonToCampaignParams) (int64, error) {
+	result, err := q.db.Exec(ctx, addPersonToCampaign, arg.CampaignID, arg.PersonID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
 }
 
 const advanceLinkedInDMStep = `-- name: AdvanceLinkedInDMStep :exec
@@ -120,6 +126,27 @@ func (q *Queries) CountCampaignLeadsByStatus(ctx context.Context, campaignID pgt
 		return nil, err
 	}
 	return items, nil
+}
+
+const deferLinkedInLead = `-- name: DeferLinkedInLead :exec
+UPDATE campaign_leads
+SET next_send_at = $1
+WHERE id = $2
+`
+
+type DeferLinkedInLeadParams struct {
+	RetryAt pgtype.Timestamptz `json:"retry_at"`
+	ID      pgtype.UUID        `json:"id"`
+}
+
+// DeferLinkedInLead holds a lead whose invite or DM was refused until
+// retry_at, so the 60-second tick does not send the same refused
+// request again every minute: both due queries skip a lead whose
+// next_send_at is in the future. Status and step stay as they are, so
+// the lead resumes where it was.
+func (q *Queries) DeferLinkedInLead(ctx context.Context, arg DeferLinkedInLeadParams) error {
+	_, err := q.db.Exec(ctx, deferLinkedInLead, arg.RetryAt, arg.ID)
+	return err
 }
 
 const getDueLeads = `-- name: GetDueLeads :many
@@ -265,7 +292,7 @@ SELECT
     COALESCE(o.canonical_name, '')::text AS company,
     ce.title                             AS title
 FROM campaign_leads cl
-JOIN campaigns         c  ON c.id  = cl.campaign_id AND c.channel = 'linkedin'
+JOIN campaigns         c  ON c.id  = cl.campaign_id AND c.channel = 'linkedin' AND c.status = 'active'
 JOIN linkedin_accounts la ON la.id = cl.linkedin_account_id
 LEFT JOIN persons       p  ON p.id  = cl.person_id
 LEFT JOIN current_emp   ce ON ce.person_id = cl.person_id
@@ -305,6 +332,9 @@ type GetDueLinkedInDMLeadsRow struct {
 // or disconnected (but not yet row-deleted) account (issue #8): its
 // in-flight DM leads are held until it reconnects to active/warming, the
 // same health predicate pickLinkedInAccount applies on the invite tick.
+// As on the invite query, only an 'active' campaign sends: an acceptance
+// that lands while the campaign is paused schedules its DM, which then
+// waits for Start.
 // linkedin_chat_id is NULL for the first DM (no chat exists until we start
 // one) and set thereafter. Recipient + name/title/company are resolved for
 // personalization, mirroring the invite query.
@@ -370,7 +400,7 @@ SELECT
     COALESCE(o.canonical_name, '')::text AS company,
     ce.title                             AS title
 FROM campaign_leads cl
-JOIN campaigns        c  ON c.id  = cl.campaign_id AND c.channel = 'linkedin'
+JOIN campaigns        c  ON c.id  = cl.campaign_id AND c.channel = 'linkedin' AND c.status = 'active'
 LEFT JOIN persons       p  ON p.id  = cl.person_id
 LEFT JOIN current_emp   ce ON ce.person_id = cl.person_id
 LEFT JOIN organizations o  ON o.id = ce.organization_id
@@ -399,11 +429,15 @@ type GetDueLinkedInInviteLeadsRow struct {
 // LinkedIn campaigns that are ready to send now. A lead qualifies while
 // it is still at step 0 and either queued (never launched-activated) or
 // active+due — the LinkedIn launch path runs ActivateCampaignLeads just
-// like email, so both states appear. The recipient identifier is the
-// person's canonical linkedin_url; name/title/company are resolved for
-// note personalization (no email join — the LinkedIn rail never touches
-// emails). tenant_id rides along so the tick can pick the tenant's
-// connected account. Mirrors GetDueLeads's CTE shape.
+// like email, so both states appear. Only an 'active' campaign sends: a
+// lead added to a draft is 'queued' with no next_send_at, and Pause
+// clears next_send_at — both read as due here, so the campaign status is
+// the gate that keeps drafts and paused campaigns silent until Start.
+// The recipient identifier is the person's canonical linkedin_url;
+// name/title/company are resolved for note personalization (no email
+// join — the LinkedIn rail never touches emails). tenant_id rides along
+// so the tick can pick the tenant's connected account. Mirrors
+// GetDueLeads's CTE shape.
 func (q *Queries) GetDueLinkedInInviteLeads(ctx context.Context, limit int32) ([]GetDueLinkedInInviteLeadsRow, error) {
 	rows, err := q.db.Query(ctx, getDueLinkedInInviteLeads, limit)
 	if err != nil {
@@ -565,6 +599,13 @@ WITH best AS (
     FROM employments emp
     WHERE emp.is_current = TRUE
     ORDER BY emp.person_id, emp.start_date DESC NULLS LAST
+), li AS (
+    SELECT DISTINCT ON (pi.person_id)
+        pi.person_id,
+        pi.identifier_value AS linkedin_url
+    FROM person_identifiers pi
+    WHERE pi.identifier_type = 'linkedin_url'
+    ORDER BY pi.person_id
 )
 SELECT
     cl.id,
@@ -583,13 +624,14 @@ SELECT
     COALESCE(b.email,         l.email,      '')::text   AS email,
     COALESCE(ce.title,        l.title)                  AS title,
     COALESCE(o.canonical_name, l.company,   '')::text   AS company,
-    l.linkedin_url                                       AS linkedin_url
+    COALESCE(li.linkedin_url, l.linkedin_url, '')::text AS linkedin_url
 FROM campaign_leads cl
 LEFT JOIN leads         l  ON l.id  = cl.lead_id
 LEFT JOIN persons       p  ON p.id  = cl.person_id
 LEFT JOIN best          b  ON b.person_id = cl.person_id
 LEFT JOIN current_emp   ce ON ce.person_id = cl.person_id
 LEFT JOIN organizations o  ON o.id = ce.organization_id
+LEFT JOIN li               ON li.person_id = cl.person_id
 WHERE cl.campaign_id = $1
 ORDER BY cl.created_at DESC
 `
@@ -611,13 +653,17 @@ type ListCampaignLeadsRow struct {
 	Email         string             `json:"email"`
 	Title         pgtype.Text        `json:"title"`
 	Company       string             `json:"company"`
-	LinkedinUrl   pgtype.Text        `json:"linkedin_url"`
+	LinkedinUrl   string             `json:"linkedin_url"`
 }
 
 // ListCampaignLeads returns the rows for one campaign with contact
 // fields resolved from either the canonical persons graph (preferred)
 // or the legacy leads table. Mirrors GetDueLeads's CTE structure so
-// that the UI displays the same unified shape.
+// that the UI displays the same unified shape. The LinkedIn URL is the
+// person's linkedin_url identifier — the one the invite worker sends
+// to (GetDueLinkedInInviteLeads) — so a lead added by person_id shows
+// the same profile the rail will invite; a legacy lead falls back to
+// its own column. ” means no profile.
 func (q *Queries) ListCampaignLeads(ctx context.Context, campaignID pgtype.UUID) ([]ListCampaignLeadsRow, error) {
 	rows, err := q.db.Query(ctx, listCampaignLeads, campaignID)
 	if err != nil {

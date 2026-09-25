@@ -4,6 +4,97 @@
 **Blocked by**: [06 — Day-one connect ceremony](./06-day-one-connect-ceremony.md),
 [10 — Plays (onboarding UI)](./10-plays-and-approved-copy.md)
 
+**Also blocked (added 2026-09-22)**: the LinkedIn account is
+`restricted` (`CREDENTIALS`) since 2026-08-04 — see the status note in
+[#06](./06-day-one-connect-ceremony.md). Step 0 clears it.
+
+**Status 2026-09-25 (this supersedes the prospect-source notes of
+2026-09-24 below):**
+
+- **Founder decisions (locked).** No PDL: sourcing must cost nothing
+  per prospect (the LinkedIn-only PRD already said so). `PDL_API_KEY`
+  is commented out in `.env.backend` (backup
+  `.env.backend.bak-20260925`), so no search can spend a credit. A lead
+  is valid for the smoke only with a LinkedIn profile. The lead source
+  is a **Sales Navigator** people search through Unipile, on the smoke
+  account; the founder buys Sales Navigator for `jose-corral-084bb6425`.
+  The connection note is optional.
+- **Why Sales Navigator.** The account is free (Unipile:
+  `premiumId: null`, `premiumFeatures: []`). One live classic search
+  (law-firm managing partners, US, Legal Services; 2 ID lookups + 1
+  search, 10 results) returned all 10 as `OUT_OF_NETWORK`,
+  `name: "LinkedIn Member"`, `public_identifier: null`: LinkedIn hides
+  people outside a small free account's network. The headlines were on
+  target ("Managing Partner at <firm>"), the names were not there.
+- **Why the note is optional.** Unipile's limits page: a free account
+  sends about 5 invites with a note per month, and about 150 per week
+  without one. Every invite carried the step-0 note.
+- **Built (PR #8, 2026-09-25):** the add-saved-leads picker; a LinkedIn
+  draft page (add leads → read the note and DMs → Start, with a
+  confirm); LinkedIn links in search, Saved and the campaign leads tab;
+  "With LinkedIn profile" on at load; `POST /leads/linkedin-search`
+  (Sales Navigator, 250 profiles per account per rolling 24 h); a
+  refused invite or DM waits 24 h (it retried every 60 s); Start, Pause
+  and the leads list now check the tenant.
+- **Live check on the smoke pod (2026-09-25, as the founder, via the
+  API):** saved one person with a URL → the saved list carried the URL,
+  title and company; a throwaway LinkedIn draft with no note took the
+  lead as `queued` with the profile URL in its leads list. Draft and
+  saved lead deleted after; `linkedin_events` stayed 0.
+- **Open before step 1:** Sales Navigator on the account, then one live
+  Sales Navigator search (10 results) to check the request and the
+  result shape. Without Sales Navigator the search returns Unipile's
+  refusal.
+
+**Status 2026-09-24:**
+
+- **Step 0 is done, in a different way.** The account is relinked and
+  bound (`_gtbOQ8dQ3aYT3bsPKptJA`, `active`) by a DB insert, not by a
+  Reconnect callback — see the 2026-09-23/24 note in
+  [#06](./06-day-one-connect-ceremony.md). Step 0.2 (clean standing) is
+  still the founder's check.
+- **Two defects found and fixed.** (1) The invite query ignored the
+  campaign status: a draft's queued leads were due at once, and Pause
+  did not stop invites. The query selected the 5 `cmd/seed` fixture
+  leads of the 2026-08-17 draft `a9608560…`. The worker was stopped, so
+  nothing was sent, and the draft is now deleted (founder decision).
+  The invite and DM queries now send only for `active` campaigns.
+  (2) The PDL search ANDed every title and location, so a search for
+  two titles or two countries found nobody, and PDL's 404 became a 502.
+- **Prospect source: resolved the same day (founder chose "save the
+  LinkedIn URL from PDL").** `/leads` reached PDL (play #1 titles and
+  countries, size `1-10`: 2,759 matches), but the PDL write-through
+  stored only `pdl_id`, and the worker skips a lead with no
+  `linkedin_url`. On this PDL plan `location_name` is also hidden, so
+  every PDL person landed with a NULL location, and any search with a
+  location dropped them all — the August "count 0, `pdl_called:true`".
+  The write-through now stores the canonical LinkedIn URL and rebuilds
+  the location from its parts. Live check (limit 3): HTTP 200, 3
+  results, each with a location and a canonical LinkedIn URL. Step 1 is
+  unblocked.
+- **ICP changed (founder decision, 2026-09-24): the smoke campaign
+  targets the LLC plays**, not magikshot play #1. That day's onboarding
+  analyzed an LLC-services website and generated 5 plays (law firms,
+  accounting firms, registered agents/gestorías, corporate legal,
+  non-resident LLC owners). It also created 5 **email** drafts, one per
+  play; they send nothing (drafts, no email account). **Discover Leads**
+  on one of them ran the old website-scrape engine and added 3 law-firm
+  people with guessed emails.
+- **Search cleanup and fix (founder decisions).** The 26 `cmd/seed`
+  test people, 7 test companies and 5 saved test leads are deleted
+  from the smoke DB: a search that the database cannot filter showed
+  25 of 25 test people. A page that the database cannot fill is now
+  topped up from PDL; before, 1 cached match blocked PDL for 90 days.
+  The description box filters nothing (PDL rejects `query_string`):
+  search with titles, industries, locations and size. Live check: the
+  law-firm play (Legal Services, United States, 51-200, limit 5)
+  returned 5 managing partners, each with a LinkedIn URL.
+- **Blocked at step 2 (found 2026-09-24): no screen adds saved leads to
+  a campaign.** No page calls `POST /api/v1/campaigns/{id}/leads`; only
+  e2e flow 18 does, through the API. The founder also asked for a
+  LinkedIn profile link on every lead. Both are the next task:
+  [HANDOFF.md](../HANDOFF.md).
+
 Warm-up start date: 2026-07-29 (account creation; bound 2026-08-03)
 Warm-up complete confirmed: ______ (founder, against #05's completion
 criterion — the calendar gate)
@@ -18,12 +109,49 @@ the words in the editor, on screen — no `copy.md`. Campaign mechanics
 (pacer, reconcile, withdrawal, reply-halt) are shipped and untouched;
 this slice exercises them.
 
-1. **Find prospects — `/leads`.** Search in the app (play #1 ICP:
-   content creators / personal-brand builders / coaches / consultants),
-   review, and save the target people. No CSV import — the saved search
-   *is* the list.
+0. **Reconnect the account — Settings (added 2026-09-22).** The bound
+   account is `restricted` since 2026-08-04 (status note in
+   [#06](./06-day-one-connect-ceremony.md)). It cannot send:
+   `pickLinkedInAccount` (`backend/internal/worker/linkedin.go`) takes
+   only `active` or `warming` accounts.
+   1. **Pod up.** On 2026-09-22 the pod is stopped, since about
+      2026-08-17. Run `devpods up` from the smoke worktree — never
+      `seed`, never `down` (runbook §0). Then confirm: `devpods status`
+      is healthy;
+      `curl -si https://magiklead-smoke.magikshot.com/api/v1/webhooks/unipile`
+      returns 405 (tunnel → api);
+      `devpods exec api go run ./cmd/unipile-webhooks list` shows the
+      three tunnel webhooks. If they are gone, register them again
+      (runbook §1).
+   2. **Clean standing.** The founder checks the account's LinkedIn
+      notifications and email for a checkpoint or verification near
+      2026-08-03/04. If one exists, the runbook §7 *Clean standing* box
+      fails: hold, and extend the warm-up as §7 says.
+   3. **Reconnect.** The founder clicks **Reconnect** in Settings and
+      completes the hosted-auth wizard. This is the first real
+      `account.connected` callback through the header-less fix
+      (`9db4491`); the 2026-08-03 bind was a replay.
+   4. **Verify.** `devpods logs api` shows the callback with a 200, and
+      `SELECT id, unipile_account_id, status, last_error FROM linkedin_accounts;`
+      returns one row: `v0DboRWMTQiYVSLUNZbmNg`, `active`,
+      `last_error` NULL.
+   5. **If a second row appears, stop.** The design expects Unipile to
+      keep the account id: the upsert is
+      `ON CONFLICT (unipile_account_id)`. But the auth-url always mints
+      a `type: "create"` link
+      (`backend/internal/linkedin/unipile/unipile.go`), and the docs
+      record no live reconnect of an existing account. With two rows,
+      the worker sends from the new row, but `/api/v1/linkedin/capacity`
+      reads the oldest (restricted) row. The old Unipile account also
+      breaks the #04 clean slate and the #12 clean disconnect. Record
+      it as a defect; the founder decides the cleanup before **Start**.
+1. **Find prospects — `/leads`.** Search in the app (the LLC plays' ICP
+   since 2026-09-24 — e.g. managing partners at US law firms, 51-200;
+   was play #1: content creators / coaches / consultants), review, and
+   save the target people. Clear the seeded description; it filters
+   nothing. No CSV import — the saved search *is* the list.
 2. **Author + create the campaign — `/campaigns/new-linkedin`.** Pick
-   play #1 and write the sequence directly in the editor:
+   the LLC play and write the sequence directly in the editor:
    - **step-0 connection note** — the founder's own words; and
    - **at least one DM** follow-up.
 
@@ -54,6 +182,10 @@ this slice exercises them.
 
 ## Acceptance criteria
 
+- [ ] Account reconnected (step 0): the api log shows the callback with
+      a 200, and `linkedin_accounts` has one row —
+      `v0DboRWMTQiYVSLUNZbmNg`, `active`, `last_error` NULL. The
+      runbook §7 *Clean standing* box is checked against 2026-08-03/04.
 - [ ] Prospects found + saved via the in-app lead search; they appear
       on the campaign's leads tab (no CSV import).
 - [ ] Campaign authored + created in `/campaigns/new-linkedin`: LinkedIn

@@ -25,6 +25,7 @@ import (
 	"github.com/jcleira/magiklead/backend/internal/email"
 	gmailpkg "github.com/jcleira/magiklead/backend/internal/gmail"
 	"github.com/jcleira/magiklead/backend/internal/handler"
+	linkedinsearch "github.com/jcleira/magiklead/backend/internal/leads/linkedin_search"
 	"github.com/jcleira/magiklead/backend/internal/leads/pdl"
 	"github.com/jcleira/magiklead/backend/internal/linkedin/unipile"
 	"github.com/jcleira/magiklead/backend/internal/middleware"
@@ -126,6 +127,9 @@ func main() {
 	campaignH := handler.NewCampaignHandler(queries, supp)
 	leadH := handler.NewLeadHandler(queries, asynqClient)
 	leadSearchH := handler.NewLeadSearchHandler(queries, pdlModule)
+	// LinkedIn people search (Sales Navigator, via Unipile) — the LinkedIn
+	// rail's lead source. Results write through to the canonical graph.
+	linkedinSearchH := handler.NewLinkedInSearchHandler(queries, unipileModule, linkedinsearch.New(pool, "", nil))
 	gmailH := handler.NewGmailHandler(gmailSvc, queries, []byte(gmailStateSecret), os.Getenv("FRONTEND_URL"))
 	unipileH := handler.NewUnipileHandler(unipileModule, queries, supp, []byte(unipileWebhookSecret), os.Getenv("FRONTEND_URL"), os.Getenv("APP_URL"))
 	sequenceH := handler.NewSequenceHandler(aiClient, queries)
@@ -227,6 +231,7 @@ func main() {
 			// Leads
 			r.Post("/leads/discover", leadH.Discover)
 			r.Post("/leads/search", leadSearchH.Search)
+			r.Post("/leads/linkedin-search", linkedinSearchH.Search)
 			r.Get("/leads", leadH.List)
 			r.Get("/leads/{id}", leadH.Get)
 
