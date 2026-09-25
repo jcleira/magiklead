@@ -174,8 +174,14 @@ func TestSearchPeople_ClassifiesErrors(t *testing.T) {
 			if !errors.Is(err, tc.want) {
 				t.Fatalf("err=%v want %v", err, tc.want)
 			}
-			if tc.want == unipile.ErrUpstream && !strings.Contains(err.Error(), "Sales Navigator is not available") {
-				t.Errorf("err=%q must carry Unipile's detail for the UI", err)
+			if tc.want == unipile.ErrUpstream {
+				var se *unipile.SearchError
+				if !errors.As(err, &se) || se.Detail != "Sales Navigator is not available" || se.Status != 400 {
+					t.Errorf("err=%#v want a SearchError with Unipile's detail for the UI", err)
+				}
+				if !strings.Contains(err.Error(), "Sales Navigator is not available") {
+					t.Errorf("err=%q must carry the detail", err)
+				}
 			}
 		})
 	}

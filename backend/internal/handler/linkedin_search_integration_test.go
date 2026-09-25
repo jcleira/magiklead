@@ -306,6 +306,25 @@ func TestLinkedInSearch_Rejects(t *testing.T) {
 	}
 }
 
+// Any other refusal (for example, no Sales Navigator on the account)
+// answers 502 with Unipile's reason in words, not a raw JSON body.
+func TestLinkedInSearch_UpstreamErrorIsReadable(t *testing.T) {
+	pool := withMetricsPool(t)
+	f := newSearchFixture(t, pool, true)
+	stub := newUnipileSearchStub(t, 400, `{"status":400,"type":"errors/invalid_parameters","title":"Invalid parameters","detail":"This account has no Sales Navigator subscription."}`)
+	h := newTestSearchHandler(pool, stub)
+
+	rr, _ := callLinkedInSearch(t, h, f.tenantID, `{"titles":["Managing Partner"]}`)
+	if rr.Code != http.StatusBadGateway || errorCode(t, rr) != "linkedin_search_failed" {
+		t.Fatalf("status=%d code=%q want 502 linkedin_search_failed", rr.Code, errorCode(t, rr))
+	}
+	var body map[string]string
+	_ = json.Unmarshal(rr.Body.Bytes(), &body)
+	if body["message"] != "LinkedIn search failed: This account has no Sales Navigator subscription." {
+		t.Errorf("message=%q", body["message"])
+	}
+}
+
 // A restriction payload marks the account restricted, as a refused send
 // does, and tells the user to reconnect.
 func TestLinkedInSearch_RestrictedMarksAccount(t *testing.T) {

@@ -12,6 +12,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -307,9 +308,25 @@ func (m *Module) SearchPeople(ctx context.Context, accountID string, s PeopleSea
 	return page, nil
 }
 
+// SearchError is a search that Unipile or LinkedIn refused for a reason
+// other than auth, rate or restriction (for example, no Sales Navigator
+// on the account). It wraps ErrUpstream. Detail is the reason Unipile
+// gives, for the user.
+type SearchError struct {
+	Status int
+	Detail string
+}
+
+func (e *SearchError) Error() string {
+	return fmt.Sprintf("%v: http %d: %s", ErrUpstream, e.Status, e.Detail)
+}
+
+func (e *SearchError) Unwrap() error { return ErrUpstream }
+
 // searchCall runs one search request. It classifies the response as a
 // send does: a search runs as the account, so a restriction payload
 // must read as ErrAccountRestricted, not as a generic upstream error.
+// Any other refusal is a *SearchError.
 func (m *Module) searchCall(ctx context.Context, method, path string, body []byte) ([]byte, error) {
 	resp, err := m.do(ctx, method, path, body)
 	if err != nil {
@@ -318,9 +335,35 @@ func (m *Module) searchCall(ctx context.Context, method, path string, body []byt
 	defer resp.Body.Close()
 	raw, _ := io.ReadAll(resp.Body)
 	if err := classifySendStatus(resp.StatusCode, raw); err != nil {
+		if errors.Is(err, ErrUpstream) {
+			return nil, &SearchError{Status: resp.StatusCode, Detail: upstreamDetail(raw)}
+		}
 		return nil, err
 	}
 	return raw, nil
+}
+
+// upstreamDetail is the readable part of a Unipile error body: its
+// detail, title or message field, else the body itself (cut to 300
+// bytes).
+func upstreamDetail(raw []byte) string {
+	var body struct {
+		Detail  string `json:"detail"`
+		Title   string `json:"title"`
+		Message string `json:"message"`
+	}
+	if json.Unmarshal(raw, &body) == nil {
+		for _, s := range []string{body.Detail, body.Title, body.Message} {
+			if s = strings.TrimSpace(s); s != "" {
+				return s
+			}
+		}
+	}
+	s := strings.TrimSpace(string(raw))
+	if len(s) > 300 {
+		s = s[:300]
+	}
+	return s
 }
 
 func nonEmpty(in []string) []string {

@@ -335,7 +335,13 @@ func (h *LinkedInSearchHandler) searchError(ctx context.Context, account reposit
 	case errors.Is(err, unipile.ErrRateLimited):
 		return apierr.APIError{Status: http.StatusTooManyRequests, Code: "linkedin_rate_limited", Message: "LinkedIn asked to slow down. Try again later."}
 	default:
-		return apierr.APIError{Status: http.StatusBadGateway, Code: "linkedin_search_failed", Message: err.Error()}
+		log.Printf("linkedin search: account %s: %v", account.UnipileAccountID, err)
+		msg := "LinkedIn search failed"
+		var se *unipile.SearchError
+		if errors.As(err, &se) && se.Detail != "" {
+			msg += ": " + se.Detail
+		}
+		return apierr.APIError{Status: http.StatusBadGateway, Code: "linkedin_search_failed", Message: msg}
 	}
 }
 
