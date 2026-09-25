@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"strings"
 	"unicode/utf8"
 
 	"github.com/go-chi/chi/v5"
@@ -35,8 +36,9 @@ func NewCampaignHandler(q *repository.Queries, supp *suppression.Module) *Campai
 // default) it persists an empty sequence the onboarding flow fills in
 // later. For a LinkedIn campaign (channel='linkedin') it validates and
 // stores the authored linkedin_sequence: a step-0 connection note
-// (≤ worker.NoteCharLimit chars) plus at least one DM step. No sending
-// happens here — adding leads (AddLeads) queues them for the engine.
+// (≤ worker.NoteCharLimit chars, or empty for an invite without a note)
+// plus at least one DM step. No sending happens here — adding leads
+// (AddLeads) queues them for the engine.
 func (h *CampaignHandler) Create(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		PlayID           string                `json:"play_id"`
@@ -109,14 +111,22 @@ func (h *CampaignHandler) Create(w http.ResponseWriter, r *http.Request) {
 
 // validateLinkedinSequence enforces the LinkedIn authoring contract: a
 // step-0 connection note within LinkedIn's character cap, followed by
-// at least one DM step. Returns a non-nil 400 APIError describing the
-// first violation, or nil when the sequence is acceptable.
+// at least one DM step with a message. The note may be empty: the
+// invite then goes without one. A free LinkedIn account can send only
+// about 5 invites with a note per month, but about 150 per week
+// without. Returns a non-nil 400 APIError describing the first
+// violation, or nil when the sequence is acceptable.
 func validateLinkedinSequence(steps []worker.LinkedinStep) *apierr.APIError {
 	if len(steps) < 2 {
 		return &apierr.APIError{Status: 400, Code: "bad_request", Message: "linkedin_sequence needs a connection note plus at least one DM step"}
 	}
 	if note := steps[0].Body; utf8.RuneCountInString(note) > worker.NoteCharLimit {
 		return &apierr.APIError{Status: 400, Code: "bad_request", Message: fmt.Sprintf("connection note exceeds %d characters", worker.NoteCharLimit)}
+	}
+	for i, dm := range steps[1:] {
+		if strings.TrimSpace(dm.Body) == "" {
+			return &apierr.APIError{Status: 400, Code: "bad_request", Message: fmt.Sprintf("DM step %d has no message", i+1)}
+		}
 	}
 	return nil
 }

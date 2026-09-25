@@ -13,6 +13,7 @@ import (
 
 	"github.com/jcleira/magiklead/backend/internal/middleware"
 	"github.com/jcleira/magiklead/backend/internal/suppression"
+	"github.com/jcleira/magiklead/backend/internal/worker"
 )
 
 // nonNilSupp returns a real suppression.Module pointer that survives
@@ -140,6 +141,36 @@ func TestCreate_LinkedInRequiresDMStep(t *testing.T) {
 	h.Create(rr, req)
 	if rr.Code != http.StatusBadRequest {
 		t.Fatalf("status=%d want 400; body=%s", rr.Code, rr.Body.String())
+	}
+}
+
+// The step-0 note is optional (an invite without a note), but it keeps
+// LinkedIn's 300-character cap, and every DM step needs a message.
+func TestValidateLinkedinSequence(t *testing.T) {
+	dm := worker.LinkedinStep{Step: 1, DelayDays: 2, Body: "Thanks for connecting, {{first_name}}!"}
+	cases := []struct {
+		name    string
+		steps   []worker.LinkedinStep
+		wantErr bool
+	}{
+		{"note and DM", []worker.LinkedinStep{{Step: 0, Body: "Hi {{first_name}}"}, dm}, false},
+		{"empty note", []worker.LinkedinStep{{Step: 0, Body: ""}, dm}, false},
+		{"note at the cap", []worker.LinkedinStep{{Step: 0, Body: strings.Repeat("é", worker.NoteCharLimit)}, dm}, false},
+		{"note over the cap", []worker.LinkedinStep{{Step: 0, Body: strings.Repeat("a", worker.NoteCharLimit+1)}, dm}, true},
+		{"no DM step", []worker.LinkedinStep{{Step: 0, Body: "Hi"}}, true},
+		{"empty DM", []worker.LinkedinStep{{Step: 0, Body: "Hi"}, {Step: 1, DelayDays: 2, Body: "  "}}, true},
+		{"empty second DM", []worker.LinkedinStep{{Step: 0, Body: ""}, dm, {Step: 2, DelayDays: 3, Body: ""}}, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := validateLinkedinSequence(tc.steps)
+			if (err != nil) != tc.wantErr {
+				t.Errorf("err=%v wantErr=%v", err, tc.wantErr)
+			}
+			if err != nil && err.Status != http.StatusBadRequest {
+				t.Errorf("status=%d want 400", err.Status)
+			}
+		})
 	}
 }
 

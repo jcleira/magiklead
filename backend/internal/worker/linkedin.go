@@ -6,6 +6,7 @@ import (
 	"errors"
 	"log"
 	"math/rand"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -170,7 +171,10 @@ func processLinkedInQueue(ctx context.Context, queries *repository.Queries, send
 		if lead.Title.Valid {
 			title = lead.Title.String
 		}
-		body := RenderLinkedinStep(note, lead.FirstName, lead.LastName, lead.Company, title)
+		// An empty note is allowed: the invite then goes without one. A free
+		// LinkedIn account can send about 5 invites with a note per month,
+		// and about 150 per week without.
+		body := strings.TrimSpace(RenderLinkedinStep(note, lead.FirstName, lead.LastName, lead.Company, title))
 
 		result, sendErr := send(ctx, unipile.InviteParams{
 			AccountID: account.UnipileAccountID,

@@ -806,6 +806,49 @@ func TestProcessLinkedInQueue_HappyInvite(t *testing.T) {
 	}
 }
 
+// TestProcessLinkedInQueue_InviteWithoutNote: a campaign whose step-0
+// note is empty sends a plain invite — no note — and parks the lead as
+// usual. A free LinkedIn account can send about 5 invites with a note
+// per month, and about 150 per week without.
+func TestProcessLinkedInQueue_InviteWithoutNote(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	pool := linkedInTestPool(t, ctx)
+	f := newLinkedInInviteFixture(t, ctx, pool)
+
+	seq, _ := json.Marshal([]LinkedinStep{
+		{Step: 0, DelayDays: 0, Body: " "},
+		{Step: 1, DelayDays: 2, Body: "Thanks for connecting, {{first_name}}!"},
+	})
+	if _, err := pool.Exec(ctx, `UPDATE campaigns SET linkedin_sequence = $2::jsonb WHERE id = $1`, f.campaignID, seq); err != nil {
+		t.Fatalf("set sequence: %v", err)
+	}
+
+	var captured unipile.InviteParams
+	calls := 0
+	send := func(_ context.Context, p unipile.InviteParams) (*unipile.InviteResult, error) {
+		calls++
+		captured = p
+		return &unipile.InviteResult{InvitationID: "inv_no_note"}, nil
+	}
+
+	processLinkedInQueue(ctx, repository.New(pool), send, resolveOK, pacer.Standard())
+
+	if calls != 1 {
+		t.Fatalf("send calls=%d want 1", calls)
+	}
+	if captured.Note != "" {
+		t.Errorf("note=%q want empty (invite without a note)", captured.Note)
+	}
+	var status string
+	if err := pool.QueryRow(ctx, `SELECT status FROM campaign_leads WHERE id = $1`, f.leadID).Scan(&status); err != nil {
+		t.Fatalf("scan status: %v", err)
+	}
+	if status != "awaiting_accept" {
+		t.Errorf("status=%q want awaiting_accept", status)
+	}
+}
+
 // TestProcessLinkedInQueue_PacerBudgetZero proves the pacing gate: an
 // account already at its weekly ceiling (window still open) sends nothing
 // this tick and the lead is left queued for a later tick. The send seam

@@ -390,6 +390,32 @@ func TestSendInvitation_HappyPath(t *testing.T) {
 	}
 }
 
+// An empty note sends the invite without one: the message key is left
+// out of the body (a free LinkedIn account allows about 5 invites with a
+// note per month, and about 150 per week without).
+func TestSendInvitation_EmptyNoteOmitsMessage(t *testing.T) {
+	s := newStub(t, 200, `{"object":"InvitationSent","invitation_id":"inv_nonote"}`)
+	m := unipile.New("key", s.URL, nil, s.Client())
+	m.SetBaseURL(s.URL)
+
+	if _, err := m.SendInvitation(context.Background(), unipile.InviteParams{
+		AccountID: "acc_1",
+		Recipient: "ACoAAtest",
+	}); err != nil {
+		t.Fatalf("SendInvitation: %v", err)
+	}
+	var body map[string]any
+	if err := json.Unmarshal(s.lastBody, &body); err != nil {
+		t.Fatalf("decode request body: %v", err)
+	}
+	if _, ok := body["message"]; ok {
+		t.Errorf("body=%s carries a message key; an invite without a note must omit it", s.lastBody)
+	}
+	if body["provider_id"] != "ACoAAtest" || body["account_id"] != "acc_1" {
+		t.Errorf("body=%s want provider_id and account_id", s.lastBody)
+	}
+}
+
 func TestSendInvitation_NotConfigured(t *testing.T) {
 	m := unipile.New("", "https://dsn.test", nil, nil)
 	if _, err := m.SendInvitation(context.Background(), unipile.InviteParams{}); err != unipile.ErrNotConfigured {
