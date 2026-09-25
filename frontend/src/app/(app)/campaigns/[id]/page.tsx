@@ -4,6 +4,7 @@ import Link from "next/link";
 import { useEffect, useState, useCallback } from "react";
 import { useParams } from "next/navigation";
 import { useApi } from "@/hooks/use-api";
+import { useLeadsApi, type SavedLead } from "@/lib/leads-api";
 
 interface Campaign {
   id: string;
@@ -11,14 +12,24 @@ interface Campaign {
   status: string;
   play_id: string;
   sequence: unknown;
+  // LinkedIn campaigns only: step 0 is the connection note (may be
+  // empty: a plain invite), steps 1+ are the DMs, in order.
+  linkedin_sequence: LinkedInStep[] | null;
   gmail_account_id: string | null;
   channel: string;
   stats: unknown;
   created_at: string;
 }
 
+interface LinkedInStep {
+  step: number;
+  delay_days: number;
+  body: string;
+}
+
 interface CampaignLead {
   id: string;
+  person_id: string | null;
   first_name: string;
   last_name: string;
   email: string;
@@ -87,6 +98,12 @@ export default function CampaignDetailPage() {
   const [selectedLead, setSelectedLead] = useState<CampaignLead | null>(null);
   const [expandedStep, setExpandedStep] = useState<number | null>(null);
 
+  // LinkedIn campaigns: the add-saved-leads picker, the note it leaves,
+  // and the connected account (Start needs one that can send).
+  const [showAddLeads, setShowAddLeads] = useState(false);
+  const [notice, setNotice] = useState<string | null>(null);
+  const [linkedInAccount, setLinkedInAccount] = useState<LinkedInCapacity | null>(null);
+
   // Email connect + deliverability popup
   const [showEmailPopup, setShowEmailPopup] = useState(false);
   const [emailAccounts, setEmailAccounts] = useState<{ id: string; email: string; provider: string }[]>([]);
@@ -119,6 +136,15 @@ export default function CampaignDetailPage() {
       .then(setEmailAccounts)
       .catch(() => setEmailAccounts([]));
   }, [apiFetch]);
+
+  // Load the connected LinkedIn account (LinkedIn campaigns only).
+  const isLinkedInCampaign = campaign?.channel === "linkedin";
+  useEffect(() => {
+    if (!isLinkedInCampaign) return;
+    apiFetch<LinkedInCapacity>("/api/v1/linkedin/capacity")
+      .then(setLinkedInAccount)
+      .catch(() => setLinkedInAccount({ connected: false }));
+  }, [apiFetch, isLinkedInCampaign]);
 
   async function handleConnectSMTP() {
     setConnectingEmail(true);
@@ -186,6 +212,42 @@ export default function CampaignDetailPage() {
       setCampaign((prev) => prev ? { ...prev, status: "active" } : prev);
     } catch {}
     setActionLoading(null);
+  }
+
+  // Start for a LinkedIn campaign: real invites go to real people, so it
+  // asks first, and a failure is shown, not swallowed.
+  async function handleStartLinkedIn() {
+    if (!campaign) return;
+    const ok = confirm(
+      `Start "${campaign.name}"?\n\n` +
+        "Invites go out from your connected LinkedIn account from the next minute, " +
+        "under the warm-up limits. You can pause the campaign later, " +
+        "but you cannot take back an invite that went out."
+    );
+    if (!ok) return;
+    setActionLoading("start");
+    try {
+      await apiFetch(`/api/v1/campaigns/${id}/start`, { method: "POST" });
+      setCampaign((prev) => prev ? { ...prev, status: "active" } : prev);
+      loadData();
+    } catch (e) {
+      alert("Start failed: " + (e instanceof Error ? e.message : "unknown error"));
+    } finally {
+      setActionLoading(null);
+    }
+  }
+
+  function handleLeadsAdded(result: AddLeadsResult) {
+    setShowAddLeads(false);
+    const parts = [`Added ${result.added} ${result.added === 1 ? "lead" : "leads"}.`];
+    if (result.skipped > 0) {
+      parts.push(`${result.skipped} skipped (already in the campaign, or no LinkedIn profile).`);
+    }
+    if (campaign?.status === "draft" && result.added > 0) {
+      parts.push("Nothing sends until you start the campaign.");
+    }
+    setNotice(parts.join(" "));
+    loadData();
   }
 
   async function handlePause() {
@@ -257,6 +319,20 @@ export default function CampaignDetailPage() {
   const isDraft = campaign.status === "draft";
   const readyToSend = leadsWithEmail.length > 0;
 
+  // LinkedIn: the worker reads the steps by position — [0] is the
+  // connection note, [1..] the DMs — and can invite only a lead with a
+  // LinkedIn profile, from an active or warming account.
+  const isLinkedIn = campaign.channel === "linkedin";
+  const linkedinSequence: LinkedInStep[] = Array.isArray(campaign.linkedin_sequence)
+    ? campaign.linkedin_sequence
+    : [];
+  const leadsWithProfile = leads.filter((l) => !!l.linkedin_url);
+  const accountReady =
+    !!linkedInAccount?.connected &&
+    (linkedInAccount.status === "active" || linkedInAccount.status === "warming");
+  const stepCount = isLinkedIn ? linkedinSequence.length : sequence.length;
+  const inCampaign = new Set(leads.map((l) => l.person_id).filter((p): p is string => !!p));
+
   // Personalize a sequence step for a specific lead
   function personalize(text: string, lead: CampaignLead): string {
     return text
@@ -285,8 +361,61 @@ export default function CampaignDetailPage() {
         )}
       </div>
 
-      {/* Setup Steps — shown when campaign is draft */}
-      {isDraft && (
+      {/* LinkedIn setup — a LinkedIn draft: add leads, read the copy, start. */}
+      {isDraft && isLinkedIn && (
+        <div className="mt-8 rounded-2xl border border-slate-200 bg-white p-6">
+          <h2 className="text-lg font-semibold text-slate-900">Set up your LinkedIn campaign</h2>
+          <p className="mt-1 text-sm text-slate-500">Nothing sends until you start the campaign.</p>
+          <div className="mt-6 space-y-4">
+            <SetupStep num={1} title="Add leads" done={leadsWithProfile.length > 0}
+              desc={hasLeads
+                ? `${leadsWithProfile.length} ${leadsWithProfile.length === 1 ? "lead has" : "leads have"} a LinkedIn profile.` +
+                  (leads.length > leadsWithProfile.length ? ` ${leads.length - leadsWithProfile.length} without one will be skipped.` : "")
+                : "Add people you saved in Leads. Only people with a LinkedIn profile can join."}
+              action={
+                <button onClick={() => setShowAddLeads(true)} disabled={!!actionLoading}
+                  className="shrink-0 rounded-lg bg-slate-900 px-4 py-2 text-sm font-semibold text-white hover:bg-slate-800 disabled:opacity-50">
+                  Add saved leads
+                </button>
+              } />
+            <SetupStep num={2} title="Read the note and the DMs" done={linkedinSequence.length >= 2}
+              desc={linkedinSequence.length >= 2
+                ? `${linkedinSequence[0].body.trim() ? "A connection note" : "No connection note (a plain invite)"} and ${linkedinSequence.length - 1} ${linkedinSequence.length - 1 === 1 ? "DM" : "DMs"}. They are below: read them before you start.`
+                : "This campaign has no LinkedIn sequence."} />
+            <SetupStep num={3} title="Start campaign" done={false} disabled={!(leadsWithProfile.length > 0 && accountReady)}
+              desc={leadsWithProfile.length === 0
+                ? "Add at least one lead with a LinkedIn profile first."
+                : !linkedInAccount
+                ? "Checking your LinkedIn account…"
+                : !linkedInAccount.connected
+                ? "Connect your LinkedIn account in Settings first."
+                : !accountReady
+                ? `Your LinkedIn account is ${linkedInAccount.status}. Reconnect it in Settings.`
+                : `Invites go out from your LinkedIn account to ${leadsWithProfile.length} ${leadsWithProfile.length === 1 ? "lead" : "leads"}, under the warm-up limits.`}
+              action={leadsWithProfile.length > 0 && linkedInAccount && !accountReady ? (
+                <Link href="/settings"
+                  className="shrink-0 rounded-lg border border-slate-300 px-4 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-50">
+                  Open Settings
+                </Link>
+              ) : leadsWithProfile.length > 0 && accountReady ? (
+                <button onClick={handleStartLinkedIn} disabled={!!actionLoading}
+                  className="shrink-0 rounded-lg bg-emerald-500 px-4 py-2 text-sm font-semibold text-white hover:bg-emerald-600 disabled:opacity-50">
+                  {actionLoading === "start" ? "Starting..." : "Start campaign"}
+                </button>
+              ) : undefined} />
+          </div>
+        </div>
+      )}
+
+      {notice && (
+        <div className="mt-6 flex items-start justify-between gap-4 rounded-lg border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-800">
+          <span>{notice}</span>
+          <button onClick={() => setNotice(null)} className="text-emerald-600 hover:text-emerald-800" aria-label="Dismiss">✕</button>
+        </div>
+      )}
+
+      {/* Setup Steps — shown when an email campaign is draft */}
+      {isDraft && !isLinkedIn && (
         <div className="mt-8 rounded-2xl border border-slate-200 bg-white p-6">
           <h2 className="text-lg font-semibold text-slate-900">Set up your campaign</h2>
           <p className="mt-1 text-sm text-slate-500">Complete these steps to start sending outreach.</p>
@@ -355,11 +484,23 @@ export default function CampaignDetailPage() {
         ))}
 
       {/* Leads Table */}
-      {hasLeads && (
+      {(hasLeads || isLinkedIn) && (
         <div className="mt-10">
-          <h2 className="text-lg font-semibold text-slate-900">
-            Leads <span className="text-sm font-normal text-slate-400">({leads.length})</span>
-          </h2>
+          <div className="flex items-center justify-between">
+            <h2 className="text-lg font-semibold text-slate-900">
+              Leads <span className="text-sm font-normal text-slate-400">({leads.length})</span>
+            </h2>
+            {isLinkedIn && !isDraft && (
+              <button onClick={() => setShowAddLeads(true)}
+                className="rounded-lg border border-slate-300 px-3 py-1.5 text-sm font-semibold text-slate-700 hover:bg-slate-50">
+                Add saved leads
+              </button>
+            )}
+          </div>
+          {!hasLeads && (
+            <p className="mt-4 text-sm text-slate-400">No leads yet.</p>
+          )}
+          {hasLeads && (
           <div className="mt-4 overflow-x-auto">
             <table className="w-full text-left text-sm">
               <thead>
@@ -367,7 +508,7 @@ export default function CampaignDetailPage() {
                   <th className="pb-3 pr-4 font-medium">Name</th>
                   <th className="pb-3 pr-4 font-medium">Title</th>
                   <th className="pb-3 pr-4 font-medium">Company</th>
-                  <th className="pb-3 pr-4 font-medium">Email</th>
+                  {!isLinkedIn && <th className="pb-3 pr-4 font-medium">Email</th>}
                   <th className="pb-3 pr-4 font-medium">LinkedIn</th>
                   <th className="pb-3 pr-4 font-medium">Status</th>
                   <th className="pb-3 font-medium">Step</th>
@@ -388,6 +529,7 @@ export default function CampaignDetailPage() {
                     </td>
                     <td className="py-3.5 pr-4 text-slate-600">{l.title || "-"}</td>
                     <td className="py-3.5 pr-4 text-slate-600">{l.company || "-"}</td>
+                    {!isLinkedIn && (
                     <td className="py-3.5 pr-4">
                       {l.email ? (
                         <span className="text-slate-700">{l.email}</span>
@@ -395,11 +537,17 @@ export default function CampaignDetailPage() {
                         <span className="text-slate-300 italic">Not found</span>
                       )}
                     </td>
+                    )}
                     <td className="py-3.5 pr-4">
                       {l.linkedin_url && !l.linkedin_url.includes("placeholder") ? (
                         <a href={l.linkedin_url} target="_blank" rel="noopener noreferrer"
                           onClick={(e) => e.stopPropagation()}
-                          className="text-blue-600 hover:underline">Profile</a>
+                          className="text-blue-600 hover:underline">Profile ↗</a>
+                      ) : isLinkedIn ? (
+                        <span className="rounded-full bg-red-50 px-2 py-0.5 text-xs font-medium text-red-600"
+                          title="No LinkedIn profile: the campaign cannot invite this lead">
+                          No profile
+                        </span>
                       ) : (
                         <span className="text-slate-300">-</span>
                       )}
@@ -410,18 +558,22 @@ export default function CampaignDetailPage() {
                       </span>
                     </td>
                     <td className="py-3.5 text-slate-600">
-                      {l.current_step}/{sequence.length || "?"}
+                      {l.current_step}/{stepCount || "?"}
                     </td>
                   </tr>
                 ))}
               </tbody>
             </table>
           </div>
+          )}
         </div>
       )}
 
+      {/* LinkedIn sequence — the copy the founder reviews before Start */}
+      {isLinkedIn && <LinkedInSequenceView steps={linkedinSequence} />}
+
       {/* Email Sequence */}
-      {hasSequence && (
+      {!isLinkedIn && hasSequence && (
         <div className="mt-10">
           <h2 className="text-lg font-semibold text-slate-900">Email Sequence</h2>
           <div className="mt-4 space-y-3">
@@ -639,7 +791,7 @@ export default function CampaignDetailPage() {
               {/* Contact Info */}
               <div className="space-y-3">
                 <h4 className="text-xs font-semibold uppercase tracking-wider text-slate-400">Contact</h4>
-                <InfoRow label="Email" value={selectedLead.email} empty="Not found" />
+                {!isLinkedIn && <InfoRow label="Email" value={selectedLead.email} empty="Not found" />}
                 <InfoRow label="LinkedIn"
                   value={selectedLead.linkedin_url && !selectedLead.linkedin_url.includes("placeholder") ? selectedLead.linkedin_url : null}
                   empty="Not available"
@@ -656,7 +808,7 @@ export default function CampaignDetailPage() {
                     {selectedLead.status}
                   </span>
                   <span className="text-sm text-slate-500">
-                    &middot; Step {selectedLead.current_step} of {sequence.length}
+                    &middot; Step {selectedLead.current_step} of {stepCount}
                   </span>
                 </div>
                 {selectedLead.last_sent_at && (
@@ -682,8 +834,23 @@ export default function CampaignDetailPage() {
                 )}
               </div>
 
+              {/* No LinkedIn profile warning */}
+              {isLinkedIn && !selectedLead.linkedin_url && (
+                <div className="mt-6 rounded-lg border border-red-200 bg-red-50 p-4">
+                  <p className="text-sm font-medium text-red-800">No LinkedIn profile</p>
+                  <p className="mt-1 text-xs text-red-600">
+                    The campaign cannot invite this lead: every invite goes to a LinkedIn profile.
+                  </p>
+                </div>
+              )}
+
+              {/* LinkedIn preview — rendered as the worker renders it */}
+              {isLinkedIn && linkedinSequence.length > 0 && (
+                <LinkedInPreview steps={linkedinSequence} lead={selectedLead} />
+              )}
+
               {/* No email warning */}
-              {!selectedLead.email && (
+              {!isLinkedIn && !selectedLead.email && (
                 <div className="mt-6 rounded-lg border border-amber-200 bg-amber-50 p-4">
                   <p className="text-sm font-medium text-amber-800">No email address found</p>
                   <p className="mt-1 text-xs text-amber-600">
@@ -694,7 +861,7 @@ export default function CampaignDetailPage() {
               )}
 
               {/* Email Preview — only for leads with email */}
-              {hasSequence && selectedLead.email && (
+              {!isLinkedIn && hasSequence && selectedLead.email && (
                 <div className="mt-6 space-y-3">
                   <h4 className="text-xs font-semibold uppercase tracking-wider text-slate-400">
                     Email Preview (personalized)
@@ -731,6 +898,17 @@ export default function CampaignDetailPage() {
             </div>
           </div>
         </div>
+      )}
+
+      {/* Add saved leads — LinkedIn campaigns */}
+      {showAddLeads && (
+        <AddSavedLeadsDialog
+          campaignId={id}
+          campaignStatus={campaign.status}
+          inCampaign={inCampaign}
+          onClose={() => setShowAddLeads(false)}
+          onAdded={handleLeadsAdded}
+        />
       )}
     </div>
   );
@@ -997,6 +1175,272 @@ function LinkedInCapacityIndicator({ capacity }: { capacity: LinkedInCapacity | 
         <div className="h-full rounded-full bg-indigo-500" style={{ width: `${usedPct}%` }} />
       </div>
       <p className="mt-2 text-xs text-slate-400">{used} sent this week</p>
+    </div>
+  );
+}
+
+/* ─── LinkedIn ─── */
+
+interface AddLeadsResult {
+  added: number;
+  skipped: number;
+  skipped_no_linkedin?: number;
+}
+
+// renderLinkedIn mirrors the worker's renderTokens: a literal replace
+// with no fallback, so an empty field renders empty.
+function renderLinkedIn(text: string, lead: CampaignLead): string {
+  return text
+    .split("{{first_name}}").join(lead.first_name || "")
+    .split("{{last_name}}").join(lead.last_name || "")
+    .split("{{company}}").join(lead.company || "")
+    .split("{{title}}").join(lead.title || "");
+}
+
+// dmTiming says when DM i (0-based) goes out, as the worker sends it:
+// DM 1 as soon as the invite is accepted (its delay is not used), and
+// each later DM its delay (at least 1 day) after the previous DM.
+function dmTiming(steps: LinkedInStep[], i: number): string {
+  if (i === 0) return "Sent when the invite is accepted";
+  const days = Math.max(1, steps[i + 1]?.delay_days ?? 1);
+  return `Sent ${days} ${days === 1 ? "day" : "days"} after DM ${i}`;
+}
+
+function LinkedInSequenceView({ steps }: { steps: LinkedInStep[] }) {
+  if (steps.length === 0) return null;
+  const note = steps[0].body.trim();
+  return (
+    <div className="mt-10">
+      <h2 className="text-lg font-semibold text-slate-900">LinkedIn sequence</h2>
+      <p className="mt-1 text-sm text-slate-500">
+        Tokens such as {"{{first_name}}"} are filled in for each lead. An empty value stays empty.
+      </p>
+      <div className="mt-4 space-y-3">
+        <SequenceCard label="Connection note" timing="Sent with the invite" body={note}
+          empty="No note: the invite goes without one." />
+        {steps.slice(1).map((dm, i) => (
+          <SequenceCard key={i} label={`DM ${i + 1}`} timing={dmTiming(steps, i)} body={dm.body.trim()}
+            empty="(empty)" />
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function SequenceCard({ label, timing, body, empty }: {
+  label: string; timing: string; body: string; empty: string;
+}) {
+  return (
+    <div className="rounded-xl border border-slate-200 p-4">
+      <div className="flex items-center justify-between gap-4">
+        <p className="text-sm font-semibold text-slate-900">{label}</p>
+        <span className="rounded-full bg-slate-100 px-2 py-0.5 text-xs font-medium text-slate-500">{timing}</span>
+      </div>
+      {body ? (
+        <p className="mt-2 whitespace-pre-line text-sm leading-relaxed text-slate-700">{body}</p>
+      ) : (
+        <p className="mt-2 text-sm italic text-slate-400">{empty}</p>
+      )}
+    </div>
+  );
+}
+
+// LinkedInPreview shows the note and DMs one lead gets.
+function LinkedInPreview({ steps, lead }: { steps: LinkedInStep[]; lead: CampaignLead }) {
+  const note = renderLinkedIn(steps[0].body, lead).trim();
+  return (
+    <div className="mt-6 space-y-3">
+      <h4 className="text-xs font-semibold uppercase tracking-wider text-slate-400">
+        LinkedIn preview (for this lead)
+      </h4>
+      <div className="rounded-lg border border-slate-100 p-3">
+        <span className="text-xs font-semibold text-slate-500">Connection note</span>
+        {note ? (
+          <p className="mt-1 whitespace-pre-line text-xs leading-relaxed text-slate-600">{note}</p>
+        ) : (
+          <p className="mt-1 text-xs italic text-slate-400">No note: a plain invite.</p>
+        )}
+      </div>
+      {steps.slice(1).map((dm, i) => (
+        <div key={i} className="rounded-lg border border-slate-100 p-3">
+          <span className="text-xs font-semibold text-slate-500">DM {i + 1} · {dmTiming(steps, i)}</span>
+          <p className="mt-1 whitespace-pre-line text-xs leading-relaxed text-slate-600">
+            {renderLinkedIn(dm.body, lead)}
+          </p>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+// AddSavedLeadsDialog lists the tenant's saved leads and adds the chosen
+// ones to the campaign (POST /campaigns/{id}/leads). A lead without a
+// LinkedIn profile, or already in the campaign, cannot be chosen; the
+// API skips such a lead too.
+function AddSavedLeadsDialog({ campaignId, campaignStatus, inCampaign, onClose, onAdded }: {
+  campaignId: string;
+  campaignStatus: string;
+  inCampaign: Set<string>;
+  onClose: () => void;
+  onAdded: (result: AddLeadsResult) => void;
+}) {
+  const { apiFetch } = useApi();
+  const { listAllSavedLeads } = useLeadsApi();
+  const [saved, setSaved] = useState<SavedLead[] | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [adding, setAdding] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    listAllSavedLeads()
+      .then((all) => { if (!cancelled) setSaved(all); })
+      .catch((e: unknown) => {
+        if (!cancelled) setError(e instanceof Error ? e.message : "Could not load saved leads");
+      });
+    return () => { cancelled = true; };
+  }, [listAllSavedLeads]);
+
+  const canAdd = (l: SavedLead) => !!l.linkedin_url && !inCampaign.has(l.person_id);
+  const addable = (saved ?? []).filter(canAdd);
+  const allSelected = addable.length > 0 && addable.every((l) => selected.has(l.person_id));
+
+  function toggle(personId: string) {
+    setSelected((prev) => {
+      const next = new Set(prev);
+      if (next.has(personId)) next.delete(personId);
+      else next.add(personId);
+      return next;
+    });
+  }
+
+  function toggleAll() {
+    setSelected(allSelected ? new Set() : new Set(addable.map((l) => l.person_id)));
+  }
+
+  async function handleAdd() {
+    if (selected.size === 0) return;
+    setAdding(true);
+    setError(null);
+    try {
+      const res = await apiFetch<AddLeadsResult>(`/api/v1/campaigns/${campaignId}/leads`, {
+        method: "POST",
+        body: JSON.stringify({ person_ids: [...selected] }),
+      });
+      onAdded(res);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Could not add the leads");
+      setAdding(false);
+    }
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm"
+      onClick={onClose}>
+      <div role="dialog" aria-label="Add saved leads"
+        className="mx-4 flex max-h-[85vh] w-full max-w-3xl flex-col rounded-2xl border border-slate-200 bg-white shadow-2xl"
+        onClick={(e) => e.stopPropagation()}>
+        <div className="flex items-start justify-between border-b border-slate-200 p-6">
+          <div>
+            <h3 className="text-lg font-semibold text-slate-900">Add saved leads</h3>
+            <p className="mt-1 text-sm text-slate-500">
+              Only people with a LinkedIn profile can join a LinkedIn campaign.
+              {campaignStatus === "draft"
+                ? " Nothing sends until you start the campaign."
+                : " New leads get their invite under the daily limit."}
+            </p>
+          </div>
+          <button onClick={onClose} aria-label="Close"
+            className="rounded-lg p-2 text-slate-400 hover:bg-slate-100 hover:text-slate-600">
+            <svg className="h-5 w-5" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
+            </svg>
+          </button>
+        </div>
+
+        <div className="overflow-y-auto p-6">
+          {error && (
+            <div className="mb-4 rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">{error}</div>
+          )}
+          {saved === null ? (
+            !error && (
+              <div className="space-y-3">
+                {[0, 1, 2].map((i) => <div key={i} className="h-10 animate-pulse rounded-lg bg-slate-100" />)}
+              </div>
+            )
+          ) : saved.length === 0 ? (
+            <div className="rounded-xl border border-dashed border-slate-300 p-10 text-center text-sm text-slate-500">
+              You have no saved leads.{" "}
+              <Link href="/leads" className="font-medium text-slate-900 underline">Find and save people in Leads</Link>,
+              then come back.
+            </div>
+          ) : (
+            <table className="w-full text-left text-sm">
+              <thead>
+                <tr className="border-b border-slate-200 text-slate-500">
+                  <th className="w-8 pb-3 pr-2">
+                    <input type="checkbox" aria-label="Select every lead that can be added"
+                      checked={allSelected} disabled={addable.length === 0} onChange={toggleAll}
+                      className="h-4 w-4 rounded border-slate-300" />
+                  </th>
+                  <th className="pb-3 pr-4 font-medium">Name</th>
+                  <th className="pb-3 pr-4 font-medium">Title</th>
+                  <th className="pb-3 pr-4 font-medium">Company</th>
+                  <th className="pb-3 font-medium">Profile</th>
+                </tr>
+              </thead>
+              <tbody>
+                {saved.map((l) => {
+                  const name = l.name || `${l.first_name ?? ""} ${l.last_name ?? ""}`.trim();
+                  const ok = canAdd(l);
+                  return (
+                    <tr key={l.person_id} className={`border-b border-slate-100 ${ok ? "" : "text-slate-400"}`}>
+                      <td className="py-3 pr-2">
+                        <input type="checkbox" aria-label={`Select ${name}`}
+                          checked={selected.has(l.person_id)} disabled={!ok} onChange={() => toggle(l.person_id)}
+                          className="h-4 w-4 rounded border-slate-300" />
+                      </td>
+                      <td className="py-3 pr-4">
+                        <span className={ok ? "font-medium text-slate-900" : "font-medium"}>{name}</span>
+                        {inCampaign.has(l.person_id) && (
+                          <span className="ml-2 text-xs">Already in this campaign</span>
+                        )}
+                      </td>
+                      <td className="py-3 pr-4">{l.title || "—"}</td>
+                      <td className="py-3 pr-4">{l.company || "—"}</td>
+                      <td className="py-3">
+                        {l.linkedin_url ? (
+                          <a href={l.linkedin_url} target="_blank" rel="noopener noreferrer"
+                            className="font-medium text-sky-600 hover:text-sky-800 hover:underline">LinkedIn ↗</a>
+                        ) : (
+                          <span className="rounded-full bg-slate-100 px-2 py-0.5 text-xs font-medium text-slate-500"
+                            title="A LinkedIn campaign cannot invite a lead without a profile">
+                            No LinkedIn profile
+                          </span>
+                        )}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          )}
+        </div>
+
+        <div className="flex items-center justify-between border-t border-slate-200 p-4">
+          <span className="text-sm text-slate-500">{selected.size} selected</span>
+          <div className="flex gap-2">
+            <button onClick={onClose}
+              className="rounded-lg border border-slate-300 px-4 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-50">
+              Cancel
+            </button>
+            <button onClick={handleAdd} disabled={selected.size === 0 || adding}
+              className="rounded-lg bg-slate-900 px-4 py-2 text-sm font-semibold text-white hover:bg-slate-800 disabled:opacity-50">
+              {adding ? "Adding…" : `Add ${selected.size} ${selected.size === 1 ? "lead" : "leads"}`}
+            </button>
+          </div>
+        </div>
+      </div>
     </div>
   );
 }

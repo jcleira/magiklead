@@ -69,8 +69,9 @@ export default function NewLinkedInCampaignPage() {
 
   const noteOver = note.length > NOTE_LIMIT;
   const dmsValid = dms.length > 0 && dms.every((d) => d.body.trim().length > 0);
+  // The note is optional: an empty note sends a plain invite.
   const canSubmit =
-    !!playId && name.trim().length > 0 && note.trim().length > 0 && !noteOver && dmsValid && !submitting;
+    !!playId && name.trim().length > 0 && !noteOver && dmsValid && !submitting;
 
   async function submit() {
     if (!canSubmit) return;
@@ -111,9 +112,8 @@ export default function NewLinkedInCampaignPage() {
         </Link>
       </div>
       <p className="mt-2 text-slate-500">
-        Author the connection note and the follow-up DMs. Add saved LinkedIn
-        prospects from the campaign once it&apos;s created — nothing sends until you
-        start it.
+        Write the connection note and the follow-up DMs. Then add your saved
+        leads on the campaign page — nothing sends until you start it.
       </p>
 
       {error && (
@@ -174,7 +174,9 @@ export default function NewLinkedInCampaignPage() {
           {/* Step 0: connection note */}
           <div className="rounded-xl border border-slate-200 p-4">
             <div className="flex items-center justify-between">
-              <h3 className="text-sm font-semibold text-slate-900">Connection note</h3>
+              <h3 className="text-sm font-semibold text-slate-900">
+                Connection note <span className="font-normal text-slate-400">(optional)</span>
+              </h3>
               <span className="rounded-full bg-slate-100 px-2 py-0.5 text-xs font-medium text-slate-500">
                 Step 0 · sent with the invite
               </span>
@@ -186,8 +188,15 @@ export default function NewLinkedInCampaignPage() {
               placeholder="Hi {{first_name}}, loved what {{company}} is building — open to connecting?"
               className={inputClass}
             />
-            <div className={`mt-1 text-right text-xs ${noteOver ? "text-red-600" : "text-slate-400"}`}>
-              {note.length}/{NOTE_LIMIT}
+            <div className="mt-1 flex items-start justify-between gap-4">
+              <p className="text-xs text-slate-400">
+                Leave it empty to send a plain invite, and put your pitch in DM 1. A free
+                LinkedIn account can send about 5 invites with a note per month, and about
+                150 a week without one.
+              </p>
+              <span className={`shrink-0 text-xs ${noteOver ? "text-red-600" : "text-slate-400"}`}>
+                {note.length}/{NOTE_LIMIT}
+              </span>
             </div>
           </div>
 
@@ -233,19 +242,25 @@ export default function NewLinkedInCampaignPage() {
                   placeholder="Thanks for connecting, {{first_name}}! Quick question about {{company}}…"
                   className={inputClass}
                 />
-                <div className="mt-2 flex items-center gap-2">
-                  <label className="text-xs text-slate-500">Send</label>
-                  <input
-                    type="number"
-                    min={1}
-                    value={d.delay_days}
-                    onChange={(e) =>
-                      updateDM(d.id, { delay_days: Math.max(1, Number(e.target.value) || 1) })
-                    }
-                    className="w-16 rounded-lg border border-slate-300 px-2 py-1 text-sm focus:border-slate-500 focus:outline-none"
-                  />
-                  <span className="text-xs text-slate-500">days after the previous step</span>
-                </div>
+                {/* The worker sends DM 1 as soon as the invite is accepted,
+                    so only the later DMs have a delay. */}
+                {i === 0 ? (
+                  <p className="mt-2 text-xs text-slate-500">Sent when they accept your invite.</p>
+                ) : (
+                  <div className="mt-2 flex items-center gap-2">
+                    <label className="text-xs text-slate-500">Send</label>
+                    <input
+                      type="number"
+                      min={1}
+                      value={d.delay_days}
+                      onChange={(e) =>
+                        updateDM(d.id, { delay_days: Math.max(1, Number(e.target.value) || 1) })
+                      }
+                      className="w-16 rounded-lg border border-slate-300 px-2 py-1 text-sm focus:border-slate-500 focus:outline-none"
+                    />
+                    <span className="text-xs text-slate-500">days after the previous DM</span>
+                  </div>
+                )}
               </div>
             ))}
             <button
