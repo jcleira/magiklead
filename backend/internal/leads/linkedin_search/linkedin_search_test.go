@@ -236,3 +236,85 @@ func assertCount(t *testing.T, pool *pgxpool.Pool, want int, query string, args 
 		t.Errorf("count=%d want %d for %q args=%v", got, want, query, args)
 	}
 }
+
+// cleanupPeople deletes the persons stored for the given LinkedIn URLs
+// (identifiers and jobs cascade) and the organizations they worked at.
+func cleanupPeople(t *testing.T, pool *pgxpool.Pool, urls ...string) {
+	t.Cleanup(func() {
+		ctx := context.Background()
+		for _, u := range urls {
+			_, _ = pool.Exec(ctx, `
+				WITH p AS (SELECT person_id FROM person_identifiers WHERE identifier_type='linkedin_url' AND identifier_value=$1),
+				     o AS (SELECT organization_id FROM employments WHERE person_id IN (SELECT person_id FROM p)),
+				     dp AS (DELETE FROM persons WHERE id IN (SELECT person_id FROM p))
+				DELETE FROM organizations WHERE id IN (SELECT organization_id FROM o)`, u)
+		}
+	})
+}
+
+// A LinkedIn search result carries no company domain. Writing the same
+// profile again — the founder runs the same search twice — must reuse
+// the company it was stored with: one person, one organization, one
+// current job, with the new title.
+func TestWriteThrough_ReusesCompanyWithoutDomain(t *testing.T) {
+	pool := withPool(t)
+	ctx := context.Background()
+	suffix := uniqueSuffix()
+	profileURL := "https://www.linkedin.com/in/grace" + strings.TrimPrefix(suffix, "-")
+	cleanupPeople(t, pool, profileURL)
+	m := linkedinsearch.New(pool, "", nil)
+
+	profile := linkedinsearch.Profile{
+		FullName:    "Grace Hopper" + suffix,
+		FirstName:   "Grace",
+		LastName:    "Hopper",
+		Title:       "Partner",
+		CompanyName: "Hopper Law" + suffix,
+		LinkedInURL: profileURL,
+		Location:    "Arlington, Virginia, United States",
+	}
+	first, err := m.WriteThrough(ctx, []linkedinsearch.Profile{profile})
+	if err != nil || len(first) != 1 {
+		t.Fatalf("WriteThrough #1: %v (%d people)", err, len(first))
+	}
+	profile.Title = "Managing Partner"
+	profile.CompanyName = "HOPPER LAW" + strings.ToUpper(suffix)
+	second, err := m.WriteThrough(ctx, []linkedinsearch.Profile{profile})
+	if err != nil || len(second) != 1 {
+		t.Fatalf("WriteThrough #2: %v (%d people)", err, len(second))
+	}
+
+	if first[0].PersonID != second[0].PersonID || first[0].OrganizationID != second[0].OrganizationID {
+		t.Errorf("person/org drift: first=%s/%s second=%s/%s",
+			first[0].PersonID, first[0].OrganizationID, second[0].PersonID, second[0].OrganizationID)
+	}
+	assertCount(t, pool, 1, `SELECT count(*) FROM employments WHERE person_id=$1 AND is_current`, first[0].PersonID)
+	assertCount(t, pool, 1, `SELECT count(*) FROM employments WHERE person_id=$1 AND is_current AND title='Managing Partner'`, first[0].PersonID)
+}
+
+// LinkedIn's company id keys the organization the way the ingest does,
+// so two people at the same company share one organization even with
+// no domain.
+func TestWriteThrough_CompanyLinkedInIDKeysOrganization(t *testing.T) {
+	pool := withPool(t)
+	ctx := context.Background()
+	suffix := uniqueSuffix()
+	companyID := "9" + strings.TrimPrefix(suffix, "-")
+	urlA := "https://www.linkedin.com/in/ada" + strings.TrimPrefix(suffix, "-")
+	urlB := "https://www.linkedin.com/in/alan" + strings.TrimPrefix(suffix, "-")
+	cleanupPeople(t, pool, urlA, urlB)
+	m := linkedinsearch.New(pool, "", nil)
+
+	people, err := m.WriteThrough(ctx, []linkedinsearch.Profile{
+		{FullName: "Ada Lovelace" + suffix, Title: "Managing Partner", CompanyName: "Engine LLP", CompanyLinkedInID: companyID, LinkedInURL: urlA},
+		{FullName: "Alan Turing" + suffix, Title: "Partner", CompanyName: "Engine LLP", CompanyLinkedInID: companyID, LinkedInURL: urlB},
+	})
+	if err != nil || len(people) != 2 {
+		t.Fatalf("WriteThrough: %v (%d people)", err, len(people))
+	}
+	if people[0].OrganizationID != people[1].OrganizationID {
+		t.Errorf("two people at LinkedIn company %s got two organizations: %s and %s", companyID, people[0].OrganizationID, people[1].OrganizationID)
+	}
+	assertCount(t, pool, 1, `SELECT count(*) FROM organization_identifiers WHERE identifier_type='linkedin' AND identifier_value=$1`,
+		"linkedin.com/company/"+companyID)
+}

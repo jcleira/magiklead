@@ -11,6 +11,95 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+const createLinkedInSearch = `-- name: CreateLinkedInSearch :exec
+INSERT INTO linkedin_searches (tenant_id, linkedin_account_id, filters, result_count)
+VALUES ($1, $2, $3, $4)
+`
+
+type CreateLinkedInSearchParams struct {
+	TenantID          pgtype.UUID `json:"tenant_id"`
+	LinkedinAccountID pgtype.UUID `json:"linkedin_account_id"`
+	Filters           []byte      `json:"filters"`
+	ResultCount       int32       `json:"result_count"`
+}
+
+// CreateLinkedInSearch logs one people search run through a connected
+// LinkedIn account and how many profiles it returned (the daily budget
+// counts them all, including results without a public profile).
+func (q *Queries) CreateLinkedInSearch(ctx context.Context, arg CreateLinkedInSearchParams) error {
+	_, err := q.db.Exec(ctx, createLinkedInSearch,
+		arg.TenantID,
+		arg.LinkedinAccountID,
+		arg.Filters,
+		arg.ResultCount,
+	)
+	return err
+}
+
+const findCurrentOrganizationByName = `-- name: FindCurrentOrganizationByName :one
+SELECT o.id, o.canonical_name, o.primary_domain, o.created_at, o.updated_at, o.industries, o.size_range
+FROM employments e
+JOIN organizations o ON o.id = e.organization_id
+WHERE e.person_id = $1
+  AND e.is_current = TRUE
+  AND lower(o.canonical_name) = lower($2::text)
+LIMIT 1
+`
+
+type FindCurrentOrganizationByNameParams struct {
+	PersonID pgtype.UUID `json:"person_id"`
+	Name     string      `json:"name"`
+}
+
+// FindCurrentOrganizationByName returns the organization of the
+// person's current job whose name matches (case-insensitive). LinkedIn
+// results carry no company domain, so a profile seen again reuses the
+// company it was stored with instead of a second organization and a
+// second current job.
+func (q *Queries) FindCurrentOrganizationByName(ctx context.Context, arg FindCurrentOrganizationByNameParams) (Organization, error) {
+	row := q.db.QueryRow(ctx, findCurrentOrganizationByName, arg.PersonID, arg.Name)
+	var i Organization
+	err := row.Scan(
+		&i.ID,
+		&i.CanonicalName,
+		&i.PrimaryDomain,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.Industries,
+		&i.SizeRange,
+	)
+	return i, err
+}
+
+const linkOrganizationIdentifierIfAbsent = `-- name: LinkOrganizationIdentifierIfAbsent :execrows
+INSERT INTO organization_identifiers (organization_id, identifier_type, identifier_value, is_primary)
+VALUES ($1, $2, $3, $4)
+ON CONFLICT DO NOTHING
+`
+
+type LinkOrganizationIdentifierIfAbsentParams struct {
+	OrganizationID  pgtype.UUID `json:"organization_id"`
+	IdentifierType  string      `json:"identifier_type"`
+	IdentifierValue string      `json:"identifier_value"`
+	IsPrimary       pgtype.Bool `json:"is_primary"`
+}
+
+// LinkOrganizationIdentifierIfAbsent keys an organization unless the
+// value is already stored (identifier_type + identifier_value is
+// UNIQUE). Returns the rows inserted (0 or 1).
+func (q *Queries) LinkOrganizationIdentifierIfAbsent(ctx context.Context, arg LinkOrganizationIdentifierIfAbsentParams) (int64, error) {
+	result, err := q.db.Exec(ctx, linkOrganizationIdentifierIfAbsent,
+		arg.OrganizationID,
+		arg.IdentifierType,
+		arg.IdentifierValue,
+		arg.IsPrimary,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const listLinkedInURLsForPersons = `-- name: ListLinkedInURLsForPersons :many
 
 SELECT DISTINCT ON (pi.person_id)
@@ -54,4 +143,25 @@ func (q *Queries) ListLinkedInURLsForPersons(ctx context.Context, personIds []pg
 		return nil, err
 	}
 	return items, nil
+}
+
+const sumLinkedInSearchProfilesSince = `-- name: SumLinkedInSearchProfilesSince :one
+SELECT COALESCE(SUM(result_count), 0)::bigint AS profiles
+FROM linkedin_searches
+WHERE linkedin_account_id = $1
+  AND created_at > $2
+`
+
+type SumLinkedInSearchProfilesSinceParams struct {
+	AccountID pgtype.UUID        `json:"account_id"`
+	Since     pgtype.Timestamptz `json:"since"`
+}
+
+// SumLinkedInSearchProfilesSince returns how many profiles the account's
+// searches returned after `since` — the daily budget check.
+func (q *Queries) SumLinkedInSearchProfilesSince(ctx context.Context, arg SumLinkedInSearchProfilesSinceParams) (int64, error) {
+	row := q.db.QueryRow(ctx, sumLinkedInSearchProfilesSince, arg.AccountID, arg.Since)
+	var profiles int64
+	err := row.Scan(&profiles)
+	return profiles, err
 }
