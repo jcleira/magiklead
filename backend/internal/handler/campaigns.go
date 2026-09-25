@@ -205,45 +205,76 @@ func (h *CampaignHandler) Get(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// Start handles POST /api/v1/campaigns/:id/start
+// Start handles POST /api/v1/campaigns/:id/start. Tenant scope is
+// enforced via GetCampaign, as on the other campaign routes: the status
+// update itself is keyed on the id alone.
 func (h *CampaignHandler) Start(w http.ResponseWriter, r *http.Request) {
 	id, err := uuid.Parse(chi.URLParam(r, "id"))
 	if err != nil {
 		apierr.WriteError(w, apierr.ErrBadRequest)
 		return
 	}
+	tenantID := getTenantID(r.Context())
+	if _, err := h.queries.GetCampaign(r.Context(), repository.GetCampaignParams{ID: pgUUID(id), TenantID: pgUUID(tenantID)}); err != nil {
+		apierr.WriteError(w, apierr.ErrNotFound)
+		return
+	}
 
-	h.queries.UpdateCampaignStatus(r.Context(), repository.UpdateCampaignStatusParams{
+	if _, err := h.queries.UpdateCampaignStatus(r.Context(), repository.UpdateCampaignStatusParams{
 		ID:     pgUUID(id),
 		Status: pgtype.Text{String: "active", Valid: true},
-	})
-	h.queries.ActivateCampaignLeads(r.Context(), pgUUID(id))
+	}); err != nil {
+		apierr.WriteError(w, apierr.APIError{Status: 500, Code: "start_failed", Message: err.Error()})
+		return
+	}
+	if err := h.queries.ActivateCampaignLeads(r.Context(), pgUUID(id)); err != nil {
+		apierr.WriteError(w, apierr.APIError{Status: 500, Code: "start_failed", Message: err.Error()})
+		return
+	}
 
 	apierr.WriteJSON(w, http.StatusOK, map[string]string{"status": "active"})
 }
 
-// Pause handles POST /api/v1/campaigns/:id/pause
+// Pause handles POST /api/v1/campaigns/:id/pause. Tenant-scoped like
+// Start.
 func (h *CampaignHandler) Pause(w http.ResponseWriter, r *http.Request) {
 	id, err := uuid.Parse(chi.URLParam(r, "id"))
 	if err != nil {
 		apierr.WriteError(w, apierr.ErrBadRequest)
 		return
 	}
+	tenantID := getTenantID(r.Context())
+	if _, err := h.queries.GetCampaign(r.Context(), repository.GetCampaignParams{ID: pgUUID(id), TenantID: pgUUID(tenantID)}); err != nil {
+		apierr.WriteError(w, apierr.ErrNotFound)
+		return
+	}
 
-	h.queries.UpdateCampaignStatus(r.Context(), repository.UpdateCampaignStatusParams{
+	if _, err := h.queries.UpdateCampaignStatus(r.Context(), repository.UpdateCampaignStatusParams{
 		ID:     pgUUID(id),
 		Status: pgtype.Text{String: "paused", Valid: true},
-	})
-	h.queries.PauseCampaignLeads(r.Context(), pgUUID(id))
+	}); err != nil {
+		apierr.WriteError(w, apierr.APIError{Status: 500, Code: "pause_failed", Message: err.Error()})
+		return
+	}
+	if err := h.queries.PauseCampaignLeads(r.Context(), pgUUID(id)); err != nil {
+		apierr.WriteError(w, apierr.APIError{Status: 500, Code: "pause_failed", Message: err.Error()})
+		return
+	}
 
 	apierr.WriteJSON(w, http.StatusOK, map[string]string{"status": "paused"})
 }
 
-// ListLeads handles GET /api/v1/campaigns/:id/leads
+// ListLeads handles GET /api/v1/campaigns/:id/leads. Tenant-scoped like
+// Start.
 func (h *CampaignHandler) ListLeads(w http.ResponseWriter, r *http.Request) {
 	id, err := uuid.Parse(chi.URLParam(r, "id"))
 	if err != nil {
 		apierr.WriteError(w, apierr.ErrBadRequest)
+		return
+	}
+	tenantID := getTenantID(r.Context())
+	if _, err := h.queries.GetCampaign(r.Context(), repository.GetCampaignParams{ID: pgUUID(id), TenantID: pgUUID(tenantID)}); err != nil {
+		apierr.WriteError(w, apierr.ErrNotFound)
 		return
 	}
 	leads, err := h.queries.ListCampaignLeads(r.Context(), pgUUID(id))
@@ -258,6 +289,12 @@ func (h *CampaignHandler) ListLeads(w http.ResponseWriter, r *http.Request) {
 // from the tenant's saved-leads list. Each person_id must already
 // exist in tenant_leads for this tenant; otherwise it's silently
 // skipped (the response reports how many landed). Plan §T06.
+//
+// A LinkedIn campaign also skips a person with no linkedin_url
+// identifier: the invite worker addresses every invite by that URL, so
+// the lead could never send, and it would hold a slot at the head of
+// the invite queue on every tick. `added` counts rows actually
+// inserted; a person already in the campaign counts as skipped.
 func (h *CampaignHandler) AddLeads(w http.ResponseWriter, r *http.Request) {
 	id, err := uuid.Parse(chi.URLParam(r, "id"))
 	if err != nil {
@@ -284,14 +321,37 @@ func (h *CampaignHandler) AddLeads(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	added := 0
 	skipped := 0
+	personIDs := make([]uuid.UUID, 0, len(req.PersonIDs))
 	for _, raw := range req.PersonIDs {
 		personID, err := uuid.Parse(raw)
 		if err != nil {
 			skipped++
 			continue
 		}
+		personIDs = append(personIDs, personID)
+	}
+
+	requireLinkedIn := campaign.Channel == "linkedin"
+	hasLinkedIn := map[uuid.UUID]bool{}
+	if requireLinkedIn && len(personIDs) > 0 {
+		ids := make([]pgtype.UUID, len(personIDs))
+		for i, personID := range personIDs {
+			ids[i] = pgUUID(personID)
+		}
+		urls, err := h.queries.ListLinkedInURLsForPersons(r.Context(), ids)
+		if err != nil {
+			apierr.WriteError(w, apierr.APIError{Status: 500, Code: "add_failed", Message: err.Error()})
+			return
+		}
+		for _, u := range urls {
+			hasLinkedIn[uuid.UUID(u.PersonID.Bytes)] = true
+		}
+	}
+
+	added := 0
+	noLinkedIn := 0
+	for _, personID := range personIDs {
 		if _, err := h.queries.GetTenantLead(r.Context(), repository.GetTenantLeadParams{
 			TenantID: pgUUID(tenantID),
 			PersonID: pgUUID(personID),
@@ -299,17 +359,27 @@ func (h *CampaignHandler) AddLeads(w http.ResponseWriter, r *http.Request) {
 			skipped++
 			continue
 		}
-		if err := h.queries.AddPersonToCampaign(r.Context(), repository.AddPersonToCampaignParams{
+		if requireLinkedIn && !hasLinkedIn[personID] {
+			skipped++
+			noLinkedIn++
+			continue
+		}
+		inserted, err := h.queries.AddPersonToCampaign(r.Context(), repository.AddPersonToCampaignParams{
 			CampaignID: pgUUID(uuid.UUID(campaign.ID.Bytes)),
 			PersonID:   pgUUID(personID),
-		}); err != nil {
+		})
+		if err != nil || inserted == 0 {
 			skipped++
 			continue
 		}
 		added++
 	}
 
-	apierr.WriteJSON(w, http.StatusOK, map[string]int{"added": added, "skipped": skipped})
+	apierr.WriteJSON(w, http.StatusOK, map[string]int{
+		"added":               added,
+		"skipped":             skipped,
+		"skipped_no_linkedin": noLinkedIn,
+	})
 }
 
 // Reengage handles POST /api/v1/campaigns/{id}/leads/{lead-id}/reengage.

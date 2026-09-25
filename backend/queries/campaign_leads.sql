@@ -5,8 +5,11 @@ INSERT INTO campaign_leads (campaign_id, lead_id, status)
 VALUES ($1, $2, 'queued')
 ON CONFLICT DO NOTHING;
 
--- New canonical path — add a saved person to a campaign.
--- name: AddPersonToCampaign :exec
+-- New canonical path — add a saved person to a campaign. Returns the
+-- rows inserted: 0 when the person is already in the campaign (the
+-- partial unique index on (campaign_id, person_id)), so the caller
+-- counts only real additions.
+-- name: AddPersonToCampaign :execrows
 INSERT INTO campaign_leads (campaign_id, person_id, status)
 VALUES ($1, $2, 'queued')
 ON CONFLICT DO NOTHING;
@@ -82,7 +85,11 @@ WHERE id = $1;
 -- ListCampaignLeads returns the rows for one campaign with contact
 -- fields resolved from either the canonical persons graph (preferred)
 -- or the legacy leads table. Mirrors GetDueLeads's CTE structure so
--- that the UI displays the same unified shape.
+-- that the UI displays the same unified shape. The LinkedIn URL is the
+-- person's linkedin_url identifier — the one the invite worker sends
+-- to (GetDueLinkedInInviteLeads) — so a lead added by person_id shows
+-- the same profile the rail will invite; a legacy lead falls back to
+-- its own column. '' means no profile.
 -- name: ListCampaignLeads :many
 WITH best AS (
     SELECT DISTINCT ON (em.person_id)
@@ -101,6 +108,13 @@ WITH best AS (
     FROM employments emp
     WHERE emp.is_current = TRUE
     ORDER BY emp.person_id, emp.start_date DESC NULLS LAST
+), li AS (
+    SELECT DISTINCT ON (pi.person_id)
+        pi.person_id,
+        pi.identifier_value AS linkedin_url
+    FROM person_identifiers pi
+    WHERE pi.identifier_type = 'linkedin_url'
+    ORDER BY pi.person_id
 )
 SELECT
     cl.id,
@@ -119,13 +133,14 @@ SELECT
     COALESCE(b.email,         l.email,      '')::text   AS email,
     COALESCE(ce.title,        l.title)                  AS title,
     COALESCE(o.canonical_name, l.company,   '')::text   AS company,
-    l.linkedin_url                                       AS linkedin_url
+    COALESCE(li.linkedin_url, l.linkedin_url, '')::text AS linkedin_url
 FROM campaign_leads cl
 LEFT JOIN leads         l  ON l.id  = cl.lead_id
 LEFT JOIN persons       p  ON p.id  = cl.person_id
 LEFT JOIN best          b  ON b.person_id = cl.person_id
 LEFT JOIN current_emp   ce ON ce.person_id = cl.person_id
 LEFT JOIN organizations o  ON o.id = ce.organization_id
+LEFT JOIN li               ON li.person_id = cl.person_id
 WHERE cl.campaign_id = $1
 ORDER BY cl.created_at DESC;
 
