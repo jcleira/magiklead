@@ -8,6 +8,44 @@
 `restricted` (`CREDENTIALS`) since 2026-08-04 — see the status note in
 [#06](./06-day-one-connect-ceremony.md). Step 0 clears it.
 
+**Status 2026-09-25 (this supersedes the prospect-source notes of
+2026-09-24 below):**
+
+- **Founder decisions (locked).** No PDL: sourcing must cost nothing
+  per prospect (the LinkedIn-only PRD already said so). `PDL_API_KEY`
+  is commented out in `.env.backend` (backup
+  `.env.backend.bak-20260925`), so no search can spend a credit. A lead
+  is valid for the smoke only with a LinkedIn profile. The lead source
+  is a **Sales Navigator** people search through Unipile, on the smoke
+  account; the founder buys Sales Navigator for `jose-corral-084bb6425`.
+  The connection note is optional.
+- **Why Sales Navigator.** The account is free (Unipile:
+  `premiumId: null`, `premiumFeatures: []`). One live classic search
+  (law-firm managing partners, US, Legal Services; 2 ID lookups + 1
+  search, 10 results) returned all 10 as `OUT_OF_NETWORK`,
+  `name: "LinkedIn Member"`, `public_identifier: null`: LinkedIn hides
+  people outside a small free account's network. The headlines were on
+  target ("Managing Partner at <firm>"), the names were not there.
+- **Why the note is optional.** Unipile's limits page: a free account
+  sends about 5 invites with a note per month, and about 150 per week
+  without one. Every invite carried the step-0 note.
+- **Built (PR #8, 2026-09-25):** the add-saved-leads picker; a LinkedIn
+  draft page (add leads → read the note and DMs → Start, with a
+  confirm); LinkedIn links in search, Saved and the campaign leads tab;
+  "With LinkedIn profile" on at load; `POST /leads/linkedin-search`
+  (Sales Navigator, 250 profiles per account per rolling 24 h); a
+  refused invite or DM waits 24 h (it retried every 60 s); Start, Pause
+  and the leads list now check the tenant.
+- **Live check on the smoke pod (2026-09-25, as the founder, via the
+  API):** saved one person with a URL → the saved list carried the URL,
+  title and company; a throwaway LinkedIn draft with no note took the
+  lead as `queued` with the profile URL in its leads list. Draft and
+  saved lead deleted after; `linkedin_events` stayed 0.
+- **Open before step 1:** Sales Navigator on the account, then one live
+  Sales Navigator search (10 results) to check the request and the
+  result shape. Without Sales Navigator the search returns Unipile's
+  refusal.
+
 **Status 2026-09-24:**
 
 - **Step 0 is done, in a different way.** The account is relinked and
