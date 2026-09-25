@@ -438,6 +438,16 @@ UPDATE campaign_leads
 SET status = 'not_accepted'
 WHERE id = $1 AND status = 'awaiting_accept';
 
+-- DeferLinkedInLead holds a lead whose invite or DM was refused until
+-- retry_at, so the 60-second tick does not send the same refused
+-- request again every minute: both due queries skip a lead whose
+-- next_send_at is in the future. Status and step stay as they are, so
+-- the lead resumes where it was.
+-- name: DeferLinkedInLead :exec
+UPDATE campaign_leads
+SET next_send_at = sqlc.arg(retry_at)
+WHERE id = sqlc.arg(id);
+
 -- MarkLinkedInFailed closes a lead the resolver could not turn into a Unipile
 -- member id for a permanent reason — the prospect's profile is gone, private,
 -- or otherwise unresolvable (issue #5). 'failed' is a terminal free-text

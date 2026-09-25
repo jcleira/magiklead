@@ -76,6 +76,10 @@ func processLinkedInQueue(ctx context.Context, queries *repository.Queries, send
 	// the breaker query runs once per account even when several leads share
 	// it, and the pause/resume flag is applied at most once per tick.
 	acceptance := map[string]pacer.Counters{}
+	// Accounts that had an invite refused this tick send no more invites
+	// until the next tick: when LinkedIn refuses one invite (a monthly note
+	// limit, a rate limit), it usually refuses the next one too.
+	refused := map[string]bool{}
 
 	for _, lead := range dueLeads {
 		// Can't invite a prospect we have no LinkedIn identifier for. This
@@ -109,6 +113,11 @@ func processLinkedInQueue(ctx context.Context, queries *repository.Queries, send
 			log.Printf("LinkedIn loop: no usable LinkedIn account for tenant %s", fmtID(lead.TenantID))
 			continue
 		}
+		accID := fmtID(account.ID)
+		if refused[accID] {
+			log.Printf("LinkedIn loop: account %s had an invite refused this tick — leaving lead %s for the next tick", accID, fmtID(lead.ID))
+			continue
+		}
 
 		now := time.Now()
 
@@ -129,7 +138,6 @@ func processLinkedInQueue(ctx context.Context, queries *repository.Queries, send
 		// paused flag if the breaker's verdict changed so the UI can surface
 		// it. A breached account's Allowance returns 0 in the gate below.
 		counters := toCounters(account)
-		accID := fmtID(account.ID)
 		stat, seen := acceptance[accID]
 		if !seen {
 			stat = acceptanceCounters(ctx, queries, account.ID)
@@ -198,8 +206,11 @@ func processLinkedInQueue(ctx context.Context, queries *repository.Queries, send
 			// (issue #8) so Settings can prompt a reconnect and the rest of
 			// this tick's pickLinkedInAccount skips it. The lead itself is
 			// not advanced — it stays queued and resumes once the account is
-			// healthy again.
+			// healthy again. Any other refusal holds the lead for
+			// linkedInRetryDelay instead of a retry on every tick.
 			escalateRestriction(ctx, queries, account.UnipileAccountID, sendErr)
+			deferRefusedLead(ctx, queries, lead.ID, sendErr)
+			refused[accID] = true
 			continue
 		}
 
@@ -240,6 +251,10 @@ func processLinkedInDMQueue(ctx context.Context, queries *repository.Queries, su
 	}
 
 	log.Printf("LinkedIn DM loop: %d leads due for a message", len(dueLeads))
+
+	// Accounts that had a DM refused this tick send no more DMs until the
+	// next tick, as on the invite path.
+	refused := map[string]bool{}
 
 	for _, lead := range dueLeads {
 		if lead.LinkedinUrl == "" {
@@ -304,6 +319,11 @@ func processLinkedInDMQueue(ctx context.Context, queries *repository.Queries, su
 		}
 		body := RenderLinkedinStep(step, lead.FirstName, lead.LastName, lead.Company, title)
 
+		if refused[lead.UnipileAccountID] {
+			log.Printf("LinkedIn DM loop: account %s had a DM refused this tick — leaving lead %s for the next tick", lead.UnipileAccountID, fmtID(lead.ID))
+			continue
+		}
+
 		// Resolve the prospect's member id — reused from the cache the invite
 		// populated, so this is a local lookup with no second Unipile call
 		// (issue #6). A false return skips the lead this tick (the resolver
@@ -338,11 +358,14 @@ func processLinkedInDMQueue(ctx context.Context, queries *repository.Queries, su
 				Step:           int32(currentStep),
 				Metadata:       meta,
 			})
-			// Lead not advanced — retried next tick. A restricted sentinel
-			// also escalates the account to 'restricted' (issue #8), which
-			// drops its in-flight DM leads out of GetDueLinkedInDMLeads until
-			// it is reconnected.
+			// Lead not advanced. A restricted sentinel escalates the account
+			// to 'restricted' (issue #8), which drops its in-flight DM leads
+			// out of GetDueLinkedInDMLeads until it is reconnected; any other
+			// refusal holds the lead for linkedInRetryDelay instead of a
+			// retry on every tick.
 			escalateRestriction(ctx, queries, lead.UnipileAccountID, sendErr)
+			deferRefusedLead(ctx, queries, lead.ID, sendErr)
+			refused[lead.UnipileAccountID] = true
 			continue
 		}
 
@@ -708,6 +731,28 @@ func escalateRestriction(ctx context.Context, queries *repository.Queries, unipi
 		LastError:        pgText(sendErr.Error()),
 	}); err != nil {
 		log.Printf("LinkedIn loop: escalate restriction for account %s: %v", unipileAccountID, err)
+	}
+}
+
+// linkedInRetryDelay is how long a lead waits after LinkedIn refused its
+// invite or DM. The tick runs every 60 seconds; without the wait, a
+// refused request (for example past a free account's monthly note
+// limit) went out again every minute.
+const linkedInRetryDelay = 24 * time.Hour
+
+// deferRefusedLead holds a lead whose invite or DM was refused for
+// linkedInRetryDelay. An account restriction is the exception:
+// escalateRestriction takes the whole account out of both loops, and
+// the lead resumes as soon as the account is reconnected.
+func deferRefusedLead(ctx context.Context, queries *repository.Queries, leadID pgtype.UUID, sendErr error) {
+	if errors.Is(sendErr, unipile.ErrAccountRestricted) {
+		return
+	}
+	if err := queries.DeferLinkedInLead(ctx, repository.DeferLinkedInLeadParams{
+		ID:      leadID,
+		RetryAt: pgtype.Timestamptz{Time: time.Now().Add(linkedInRetryDelay), Valid: true},
+	}); err != nil {
+		log.Printf("LinkedIn loop: defer lead %s: %v", fmtID(leadID), err)
 	}
 }
 

@@ -128,6 +128,27 @@ func (q *Queries) CountCampaignLeadsByStatus(ctx context.Context, campaignID pgt
 	return items, nil
 }
 
+const deferLinkedInLead = `-- name: DeferLinkedInLead :exec
+UPDATE campaign_leads
+SET next_send_at = $1
+WHERE id = $2
+`
+
+type DeferLinkedInLeadParams struct {
+	RetryAt pgtype.Timestamptz `json:"retry_at"`
+	ID      pgtype.UUID        `json:"id"`
+}
+
+// DeferLinkedInLead holds a lead whose invite or DM was refused until
+// retry_at, so the 60-second tick does not send the same refused
+// request again every minute: both due queries skip a lead whose
+// next_send_at is in the future. Status and step stay as they are, so
+// the lead resumes where it was.
+func (q *Queries) DeferLinkedInLead(ctx context.Context, arg DeferLinkedInLeadParams) error {
+	_, err := q.db.Exec(ctx, deferLinkedInLead, arg.RetryAt, arg.ID)
+	return err
+}
+
 const getDueLeads = `-- name: GetDueLeads :many
 WITH best AS (
     SELECT DISTINCT ON (em.person_id)

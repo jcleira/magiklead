@@ -448,6 +448,44 @@ func TestProcessLinkedInDMQueue_SkipsRestrictedAccount(t *testing.T) {
 	}
 }
 
+// TestProcessLinkedInDMQueue_RefusedDMWaits: a refused DM holds the lead
+// for linkedInRetryDelay with its status and step unchanged, so the next
+// tick does not send the same refused DM again.
+func TestProcessLinkedInDMQueue_RefusedDMWaits(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	pool := linkedInTestPool(t, ctx)
+	f := newLinkedInDMFixture(t, ctx, pool)
+
+	calls := 0
+	send := func(_ context.Context, _ unipile.MessageParams) (*unipile.MessageResult, error) {
+		calls++
+		return nil, fmt.Errorf("%w: http 422: recipient cannot be messaged", unipile.ErrUpstream)
+	}
+
+	processLinkedInDMQueue(ctx, repository.New(pool), suppression.New(pool), send, resolveOK)
+	processLinkedInDMQueue(ctx, repository.New(pool), suppression.New(pool), send, resolveOK)
+
+	if calls != 1 {
+		t.Errorf("send calls=%d want 1 (the refused DM waits; the next tick skips it)", calls)
+	}
+	var status string
+	var step int32
+	var nextSendAt pgtype.Timestamptz
+	if err := pool.QueryRow(ctx, `SELECT status, current_step, next_send_at FROM campaign_leads WHERE id = $1`, f.leadID).Scan(&status, &step, &nextSendAt); err != nil {
+		t.Fatalf("scan lead: %v", err)
+	}
+	if status != "active" || step != 1 {
+		t.Errorf("lead status=%q step=%d want active/1 (held in place)", status, step)
+	}
+	if wait := time.Until(nextSendAt.Time); !nextSendAt.Valid || wait < 23*time.Hour || wait > 25*time.Hour {
+		t.Errorf("next_send_at=%+v want about 24h ahead", nextSendAt)
+	}
+	if n := countRows(t, ctx, pool, `SELECT count(*) FROM linkedin_events WHERE campaign_lead_id = $1 AND event_type = 'failed'`, f.leadID); n != 1 {
+		t.Errorf("failed events=%d want 1", n)
+	}
+}
+
 // newLinkedInStaleInviteFixture sets up a lead parked awaiting acceptance
 // whose invite was sent inviteAge ago — the shape the withdrawal sweep
 // (issue #7) acts on: a LinkedIn campaign_lead at awaiting_accept, bound to
@@ -1048,15 +1086,20 @@ func TestProcessLinkedInDMQueue_SkipsPausedCampaign(t *testing.T) {
 // transient rate-limit and config-level auth errors leave the account
 // active for the next tick to retry.
 func TestProcessLinkedInQueue_SendErrorClassified(t *testing.T) {
+	// wantDeferred: every refusal except a restriction holds the lead for
+	// linkedInRetryDelay; a restricted account resumes as soon as it is
+	// reconnected, so its lead is not held.
 	cases := []struct {
 		name              string
 		sendErr           error
 		wantReason        string
 		wantAccountStatus string
+		wantDeferred      bool
 	}{
-		{"restricted", fmt.Errorf("%w: account is restricted", unipile.ErrAccountRestricted), "restricted", "restricted"},
-		{"rate_limited", fmt.Errorf("%w", unipile.ErrRateLimited), "rate_limited", "active"},
-		{"auth", fmt.Errorf("%w", unipile.ErrUnauthorized), "auth", "active"},
+		{"restricted", fmt.Errorf("%w: account is restricted", unipile.ErrAccountRestricted), "restricted", "restricted", false},
+		{"rate_limited", fmt.Errorf("%w", unipile.ErrRateLimited), "rate_limited", "active", true},
+		{"auth", fmt.Errorf("%w", unipile.ErrUnauthorized), "auth", "active", true},
+		{"refused", fmt.Errorf("%w: http 422: cannot_resend_yet", unipile.ErrUpstream), "network", "active", true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -1105,7 +1148,8 @@ func TestProcessLinkedInQueue_SendErrorClassified(t *testing.T) {
 			var status string
 			var step int32
 			var acctID pgtype.UUID
-			if err := pool.QueryRow(ctx, `SELECT status, current_step, linkedin_account_id FROM campaign_leads WHERE id = $1`, f.leadID).Scan(&status, &step, &acctID); err != nil {
+			var nextSendAt pgtype.Timestamptz
+			if err := pool.QueryRow(ctx, `SELECT status, current_step, linkedin_account_id, next_send_at FROM campaign_leads WHERE id = $1`, f.leadID).Scan(&status, &step, &acctID, &nextSendAt); err != nil {
 				t.Fatalf("scan lead: %v", err)
 			}
 			if status != "queued" {
@@ -1116,6 +1160,14 @@ func TestProcessLinkedInQueue_SendErrorClassified(t *testing.T) {
 			}
 			if acctID.Valid {
 				t.Errorf("linkedin_account_id set (%x) but the send failed", acctID.Bytes)
+			}
+			if tc.wantDeferred {
+				wait := time.Until(nextSendAt.Time)
+				if !nextSendAt.Valid || wait < 23*time.Hour || wait > 25*time.Hour {
+					t.Errorf("next_send_at=%+v want about 24h ahead (a refused invite waits)", nextSendAt)
+				}
+			} else if nextSendAt.Valid {
+				t.Errorf("next_send_at=%v want NULL (a restricted account's lead resumes on reconnect)", nextSendAt.Time)
 			}
 
 			// Counters untouched.
@@ -1145,6 +1197,64 @@ func TestProcessLinkedInQueue_SendErrorClassified(t *testing.T) {
 				t.Errorf("last_error=%q set but a transient error must not escalate", lastErr.String)
 			}
 		})
+	}
+}
+
+// TestProcessLinkedInQueue_RefusalStopsAccountForTick: once LinkedIn
+// refuses one invite, the account sends no more invites in that tick.
+// The refused lead waits; the next due lead goes on the next tick. Before,
+// every tick sent every due lead again, so a refused request (a free
+// account past its monthly note limit) repeated every minute.
+func TestProcessLinkedInQueue_RefusalStopsAccountForTick(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	pool := linkedInTestPool(t, ctx)
+	f := newLinkedInInviteFixture(t, ctx, pool)
+
+	// A second due lead in the same campaign, queued after the first.
+	secondPerson := uuid.New()
+	secondLead := uuid.New()
+	mustExec := func(q string, args ...any) {
+		t.Helper()
+		if _, err := pool.Exec(ctx, q, args...); err != nil {
+			t.Fatalf("exec %q: %v", q, err)
+		}
+	}
+	mustExec(`INSERT INTO persons (id, canonical_name, normalized_name, first_name, last_name) VALUES ($1, 'Bob Second', 'bob second', 'Bob', 'Second')`, secondPerson)
+	mustExec(`INSERT INTO person_identifiers (person_id, identifier_type, identifier_value, is_primary) VALUES ($1, 'linkedin_url', $2, TRUE)`,
+		secondPerson, "https://www.linkedin.com/in/second-"+uuid.NewString())
+	mustExec(`INSERT INTO campaign_leads (id, campaign_id, person_id, status, current_step, created_at) VALUES ($1, $2, $3, 'queued', 0, NOW() + INTERVAL '1 second')`,
+		secondLead, f.campaignID, secondPerson)
+	t.Cleanup(func() {
+		c := context.Background()
+		_, _ = pool.Exec(c, `DELETE FROM linkedin_events WHERE campaign_lead_id = $1`, secondLead)
+		_, _ = pool.Exec(c, `DELETE FROM campaign_leads WHERE id = $1`, secondLead)
+		_, _ = pool.Exec(c, `DELETE FROM persons WHERE id = $1`, secondPerson)
+	})
+
+	calls := 0
+	send := func(_ context.Context, _ unipile.InviteParams) (*unipile.InviteResult, error) {
+		calls++
+		return nil, fmt.Errorf("%w: http 422: invitation refused", unipile.ErrUpstream)
+	}
+	failedEvents := func(leadID uuid.UUID) int {
+		return countRows(t, ctx, pool, `SELECT count(*) FROM linkedin_events WHERE campaign_lead_id = $1 AND event_type = 'failed'`, leadID)
+	}
+
+	processLinkedInQueue(ctx, repository.New(pool), send, resolveOK, pacer.Standard())
+	if calls != 1 {
+		t.Fatalf("first tick send calls=%d want 1 (the account stops after a refusal)", calls)
+	}
+	if failedEvents(f.leadID) != 1 || failedEvents(secondLead) != 0 {
+		t.Errorf("after tick 1 failed events: first=%d second=%d want 1/0", failedEvents(f.leadID), failedEvents(secondLead))
+	}
+
+	processLinkedInQueue(ctx, repository.New(pool), send, resolveOK, pacer.Standard())
+	if calls != 2 {
+		t.Fatalf("second tick send calls=%d want 2 in total (only the second lead)", calls)
+	}
+	if failedEvents(f.leadID) != 1 || failedEvents(secondLead) != 1 {
+		t.Errorf("after tick 2 failed events: first=%d second=%d want 1/1 (the refused lead waits)", failedEvents(f.leadID), failedEvents(secondLead))
 	}
 }
 
