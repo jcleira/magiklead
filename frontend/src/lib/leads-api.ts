@@ -182,6 +182,9 @@ export function useLeadsApi() {
     }
 
     return {
+      // ready is false until Clerk has loaded a signed-in session; a call
+      // before that fails with "Not authenticated".
+      ready: isLoaded && !!isSignedIn,
       searchLeads(req: LeadSearchRequest) {
         return call<LeadSearchResponse>("/api/v1/leads/search", {
           method: "POST",

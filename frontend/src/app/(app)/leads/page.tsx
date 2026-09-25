@@ -266,7 +266,7 @@ function SaveButton({
 // LinkedIn account. It runs only on a click: each search uses the
 // account's daily profile budget, and LinkedIn watches the volume.
 function LinkedInSearch({ filters }: { filters: SearchFilters }) {
-  const { searchLinkedIn } = useLeadsApi();
+  const { searchLinkedIn, ready } = useLeadsApi();
   const { savedIds, savingId, save } = useSaveLead();
   const [query, setQuery] = useState<LinkedInSearchRequest | null>(null);
   const [results, setResults] = useState<LinkedInSearchResult[]>([]);
@@ -330,7 +330,7 @@ function LinkedInSearch({ filters }: { filters: SearchFilters }) {
       <div className="mt-5 flex flex-wrap items-center gap-3">
         <button
           onClick={handleSearch}
-          disabled={!hasFilter || loading !== null}
+          disabled={!ready || !hasFilter || loading !== null}
           className="rounded-lg bg-slate-900 px-4 py-2 text-sm font-semibold text-white hover:bg-slate-800 disabled:opacity-50"
         >
           {loading === "search" ? "Searching…" : "Search LinkedIn"}

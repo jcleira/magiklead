@@ -382,7 +382,7 @@ export default function CampaignDetailPage() {
               desc={linkedinSequence.length >= 2
                 ? `${linkedinSequence[0].body.trim() ? "A connection note" : "No connection note (a plain invite)"} and ${linkedinSequence.length - 1} ${linkedinSequence.length - 1 === 1 ? "DM" : "DMs"}. They are below: read them before you start.`
                 : "This campaign has no LinkedIn sequence."} />
-            <SetupStep num={3} title="Start campaign" done={false} disabled={!(leadsWithProfile.length > 0 && accountReady)}
+            <SetupStep num={3} title="Start campaign" done={false} disabled={leadsWithProfile.length === 0}
               desc={leadsWithProfile.length === 0
                 ? "Add at least one lead with a LinkedIn profile first."
                 : !linkedInAccount
