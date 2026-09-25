@@ -39,14 +39,17 @@ func NewLeadSearchHandler(q *repository.Queries, pdlModule *pdl.Module) *LeadSea
 // query_string ("Query clause [query] not allowed"), and the
 // canonical query has no text column to match it against.
 type leadSearchRequest struct {
-	Titles      []string `json:"titles"`
-	WithEmail   bool     `json:"with_email"`
-	Limit       int32    `json:"limit"`
-	Offset      int32    `json:"offset"`
-	Industries  []string `json:"industries"`
-	CompanySize string   `json:"company_size"`
-	Locations   []string `json:"locations"`
-	Description string   `json:"description"`
+	Titles    []string `json:"titles"`
+	WithEmail bool     `json:"with_email"`
+	// WithLinkedIn keeps only people with a LinkedIn profile — the only
+	// people the LinkedIn rail can invite.
+	WithLinkedIn bool     `json:"with_linkedin"`
+	Limit        int32    `json:"limit"`
+	Offset       int32    `json:"offset"`
+	Industries   []string `json:"industries"`
+	CompanySize  string   `json:"company_size"`
+	Locations    []string `json:"locations"`
+	Description  string   `json:"description"`
 }
 
 type leadSearchResult struct {
@@ -115,12 +118,25 @@ func (h *LeadSearchHandler) Search(w http.ResponseWriter, r *http.Request) {
 	// one (see leadSearchRequest), so a description-only search stays
 	// on the canonical and never pays for an unfiltered PDL query.
 	usesPDLFilters := len(industries) > 0 || companySize != "" || len(locations) > 0
+	pdlOn := h.pdl != nil && h.pdl.Configured()
 	pdlCalled := false
 
-	// Canonical-first query. When any PDL-only filter is active we
-	// require fresh rows so stale matches don't masquerade as a hit.
-	rows, err := h.searchCanonical(r.Context(), titles, industries, companySize, locations,
-		req.WithEmail, usesPDLFilters, limit, offset)
+	// Canonical-first query. When any PDL-only filter is active and PDL
+	// can refresh the rows, we require fresh rows so stale matches don't
+	// masquerade as a hit. Without PDL nothing refreshes a row, so the
+	// gate would only hide people (as SearchWithCache also drops it).
+	params := repository.SearchPersonsParams{
+		Titles:       titles,
+		WithEmail:    req.WithEmail,
+		WithLinkedin: req.WithLinkedIn,
+		Industries:   lowerEach(industries),
+		CompanySize:  pgTextOrNull(companySize),
+		Locations:    locations,
+		RequireFresh: usesPDLFilters && pdlOn,
+		ResultLimit:  limit,
+		ResultOffset: offset,
+	}
+	rows, err := h.queries.SearchPersons(r.Context(), params)
 	if err != nil {
 		apierr.WriteError(w, apierr.APIError{Status: 500, Code: "search_failed", Message: err.Error()})
 		return
@@ -146,7 +162,7 @@ func (h *LeadSearchHandler) Search(w http.ResponseWriter, r *http.Request) {
 	// search for an ICP capped every later one at what it had cached, for
 	// the whole 90-day window. PDL bills per record returned, so a
 	// top-up costs up to `limit` credits.
-	if (len(rows) < int(limit) || noAddresses) && usesPDLFilters && h.pdl != nil && h.pdl.Configured() {
+	if (len(rows) < int(limit) || noAddresses) && usesPDLFilters && pdlOn {
 		if _, err := h.pdl.Search(r.Context(), pdl.Filters{
 			Titles:      titles,
 			Industries:  industries,
@@ -161,8 +177,7 @@ func (h *LeadSearchHandler) Search(w http.ResponseWriter, r *http.Request) {
 			log.Printf("pdl: search soft-failed: %v", err)
 		}
 		pdlCalled = true
-		rows, err = h.searchCanonical(r.Context(), titles, industries, companySize, locations,
-			req.WithEmail, usesPDLFilters, limit, offset)
+		rows, err = h.queries.SearchPersons(r.Context(), params)
 		if err != nil {
 			apierr.WriteError(w, apierr.APIError{Status: 500, Code: "search_failed", Message: err.Error()})
 			return
@@ -194,20 +209,6 @@ func (h *LeadSearchHandler) Search(w http.ResponseWriter, r *http.Request) {
 		Count:          len(results),
 		EmailableCount: emailable,
 		PDLCalled:      pdlCalled,
-	})
-}
-
-func (h *LeadSearchHandler) searchCanonical(ctx context.Context, titles, industries []string, companySize string,
-	locations []string, withEmail, requireFresh bool, limit, offset int32) ([]repository.SearchPersonsRow, error) {
-	return h.queries.SearchPersons(ctx, repository.SearchPersonsParams{
-		Titles:       titles,
-		WithEmail:    withEmail,
-		Industries:   lowerEach(industries),
-		CompanySize:  pgTextOrNull(companySize),
-		Locations:    locations,
-		RequireFresh: requireFresh,
-		ResultLimit:  limit,
-		ResultOffset: offset,
 	})
 }
 

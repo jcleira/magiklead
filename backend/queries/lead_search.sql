@@ -59,6 +59,12 @@ WHERE
             SELECT 1 FROM emails em
             WHERE em.person_id = p.id AND em.verified_at IS NOT NULL
         ))
+    -- with_linkedin keeps only people the LinkedIn rail can invite: the
+    -- linkedin_url identifier is the address of every invite.
+    AND (NOT sqlc.arg('with_linkedin')::boolean OR EXISTS (
+            SELECT 1 FROM person_identifiers pi
+            WHERE pi.person_id = p.id AND pi.identifier_type = 'linkedin_url'
+        ))
     AND (sqlc.narg('industries')::text[] IS NULL OR o.industries && sqlc.narg('industries')::text[])
     AND (sqlc.narg('company_size')::text IS NULL OR o.size_range = sqlc.narg('company_size')::text)
     AND (sqlc.narg('locations')::text[] IS NULL OR EXISTS (
