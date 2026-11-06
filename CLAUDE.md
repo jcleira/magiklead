@@ -41,14 +41,15 @@ entrypoint runs `go run ./cmd/migrate` before handing control to air.
 
 ### Public base URL override (smoke pod only)
 
-`APP_URL` normally interpolates to the local literal
-(`https://api-<pod>.<project>.localhost`) on every pod. The backend
+`APP_URL` normally interpolates to the pod's own name
+(`https://api-<pod>.<project>.<suffix>`, where devpods sets
+`DEVPOD_SUFFIX`, default `localhost`) on every pod. The backend
 stamps it into the Unipile hosted-auth `notify_url`
 (`UnipileHandler.AuthURL`), so a pod that must receive real Unipile
 webhooks needs a *publicly reachable* base instead. Override it with
 `MAGIKLEAD_PUBLIC_API_URL` in a **gitignored `.env` at the worktree
 root**: docker-compose reads it for the
-`APP_URL: ${MAGIKLEAD_PUBLIC_API_URL:-<local literal>}` interpolation
+`APP_URL: ${MAGIKLEAD_PUBLIC_API_URL:-<pod name>}` interpolation
 in `devpod/compose.yml`, and devpods regenerates only `.devpod.env`
 (never `.env`), so the override survives `devpods up`. In the smoke
 worktree only:
@@ -58,10 +59,13 @@ worktree only:
 MAGIKLEAD_PUBLIC_API_URL=https://magiklead-smoke.magikshot.com
 ```
 
-Every other worktree leaves it unset and keeps the local literal, so
-the mvp pod is byte-identical to before. `FRONTEND_URL` stays local
-everywhere — hosted-auth *redirects* run in the operator's browser on
-the laptop, so only the webhook callback needs public reachability.
+Every other worktree leaves it unset and keeps the pod name.
+`FRONTEND_URL` is never public — hosted-auth *redirects* run in the
+operator's browser, so only the webhook callback needs public
+reachability. It is one URL (the base of each redirect and link): the
+suffix name `https://<pod>.<project>.<suffix>`, which a browser on
+another tailnet machine reaches. The api CORS also allows the
+`.localhost` origin, from `CORS_EXTRA_ORIGINS`.
 The public tunnel that this URL points at is stood up in
 `docs/2026-07-13-magikshot-linkedin-smoke/` (issue #01). Verify with
 `devpods exec api printenv APP_URL`.

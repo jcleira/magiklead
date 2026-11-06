@@ -73,7 +73,9 @@ func (s *stub) handle(w http.ResponseWriter, r *http.Request) {
 		s.items = append(s.items, created)
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusCreated)
-		_ = json.NewEncoder(w).Encode(created)
+		// Unipile answers create with the new id only (see
+		// unipile.Module.CreateWebhook); the list endpoint gives the rest.
+		_ = json.NewEncoder(w).Encode(map[string]any{"object": "WebhookCreated", "webhook_id": created["id"]})
 
 	case r.Method == http.MethodDelete:
 		id := strings.TrimPrefix(r.URL.Path, "/api/v1/webhooks/")

@@ -160,13 +160,7 @@ func main() {
 	r.Use(chimw.RealIP)
 	r.Use(middleware.Logger)
 	r.Use(chimw.Recoverer)
-	r.Use(cors.Handler(cors.Options{
-		AllowedOrigins:   []string{os.Getenv("FRONTEND_URL")},
-		AllowedMethods:   []string{"GET", "POST", "PUT", "DELETE", "OPTIONS"},
-		AllowedHeaders:   []string{"Accept", "Authorization", "Content-Type"},
-		AllowCredentials: true,
-		MaxAge:           300,
-	}))
+	r.Use(cors.Handler(corsOptions(os.Getenv("FRONTEND_URL"), os.Getenv("CORS_EXTRA_ORIGINS"))))
 
 	r.Get("/health", func(w http.ResponseWriter, r *http.Request) {
 		w.Write([]byte("ok"))
@@ -319,5 +313,25 @@ func main() {
 	defer cancel()
 	if err := srv.Shutdown(ctx); err != nil {
 		log.Fatal("Server forced to shutdown:", err)
+	}
+}
+
+// corsOptions allows the browser at frontendURL, and at each origin of the
+// comma list extraOrigins, to call the api. FRONTEND_URL stays one URL,
+// because the handlers use it as the base of each redirect; a devpod that
+// answers at two names gives its second origin in CORS_EXTRA_ORIGINS.
+func corsOptions(frontendURL, extraOrigins string) cors.Options {
+	origins := []string{frontendURL}
+	for _, origin := range strings.Split(extraOrigins, ",") {
+		if origin = strings.TrimSpace(origin); origin != "" && origin != frontendURL {
+			origins = append(origins, origin)
+		}
+	}
+	return cors.Options{
+		AllowedOrigins:   origins,
+		AllowedMethods:   []string{"GET", "POST", "PUT", "DELETE", "OPTIONS"},
+		AllowedHeaders:   []string{"Accept", "Authorization", "Content-Type"},
+		AllowCredentials: true,
+		MaxAge:           300,
 	}
 }
