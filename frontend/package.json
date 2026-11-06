@@ -6,7 +6,8 @@
     "dev": "next dev --port 3040",
     "build": "next build",
     "start": "next start",
-    "lint": "eslint"
+    "lint": "eslint",
+    "test": "node --test next.config.test.mjs"
   },
   "dependencies": {
     "@clerk/nextjs": "^7.0.12",
